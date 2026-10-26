@@ -3,6 +3,9 @@ node_modules/
 build/
 dist/
 coverage/
+*.db
+*.db-journal
+!backend/prisma/dev.db
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*

@@ -1,5 +1,10 @@
 # TransitOps – complete project guide (for the presentation and viva)
 
+> **Current runtime:** React/Vite in `frontend/` and Node.js/Express/Prisma in `backend/`, deployed
+> together as one Render web service. Some detailed examples and diagrams later in this guide are
+> historical .NET design material; see the [current architecture guide](./TRANSITOPS_ARCHITECTURE_GUIDE.md)
+> and [deployment guide](./DEPLOYMENT.md) for implementation and deployment details.
+
 Read this top to bottom once, then use the module sections and the viva questions to revise.
 Open it in VS Code with **Ctrl + Shift + V** for a formatted view.
 

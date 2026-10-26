@@ -1,5 +1,39 @@
-# 🚚 TransitOps: The Ultimate Guide for Junior Developers
-> **A complete domain breakdown, role-based architecture guide, KPI playbook, ER diagram, and .NET EF Core backend implementation manual.**
+# TransitOps Architecture Guide
+
+> The domain and .NET/EF Core examples below are reference material, not the active runtime stack.
+> The deployed application is a React/Vite frontend with a Node.js/Express API, Prisma, and PostgreSQL.
+
+## Current code and deployment architecture
+
+```text
+frontend/
+  src/                     React UI, views, context, API client, and shared types
+  public/                  Static assets
+  index.html
+  vite.config.ts
+backend/
+  server.ts                Express host, API mounts, health check, SPA serving
+  src/
+    modules/<feature>/     Feature routes and request handlers
+    middleware/            JWT authentication and role authorization
+    services/              Shared PDF, email, KPI, and safety-score logic
+    db.ts                  Prisma client and seed routines
+  prisma/                  Prisma schema and CLI configuration
+package.json               Root scripts for both applications
+render.yaml                Single-service Render Blueprint
+```
+
+The root npm manifest manages both halves of the application. `npm run build` places the Vite
+bundle in root `dist/`; `npm start` runs Express, which serves that bundle and the API from one
+Render web service. Configure `PORT` through Render (or locally); the backend honors it. The
+`/api/health` endpoint checks database availability.
+
+Feature code lives under `backend/src/modules/<feature>/`; each module owns its Express router and
+request handlers. Authentication middleware, persistence setup, and shared services stay outside
+the feature modules. Prisma models are defined in `backend/prisma/schema.prisma`.
+
+For deployment and environment configuration, see [README.md](../README.md) and
+[SETUP_GUIDE.md](./SETUP_GUIDE.md).
 
 ---
 
@@ -89,7 +123,7 @@ Here is why each role in TransitOps has a custom dashboard:
 
 The original requirement permits either a Driver or a Dispatcher role. This application defines only Driver, and does not treat it as a separate Dispatcher role.
 
-Public self-registration is disabled. Development startup idempotently seeds the demo tenant data and accounts when `DemoAccounts:Password` is configured in .NET User Secrets. In production, users must belong to an organization and be created by its Organization Admin; purchase fulfillment must provision that first admin through a trusted integration.
+Public self-registration is disabled. The Node.js implementation scopes operational records, reports, and KPI queries to the tenant in the verified JWT; create and update requests derive tenant ownership from that identity rather than client-supplied data. Socket connections are also authenticated and receive events only from their tenant room. A verified subscription setup creates the first organization administrator, after which that admin provisions additional organization users. Demo accounts are seeded only when `DEMO_ACCOUNT_PASSWORD` is present in the Node.js `.env`; all demo accounts accept only that configured password.
 
 ---
 

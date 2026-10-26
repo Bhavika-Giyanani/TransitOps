@@ -1,8 +1,8 @@
-# TransitOps Developer Handoff
+# TransitOps Developer Handoff (Legacy Reference)
 
 This document is the project orientation guide for a developer or AI coding agent taking over TransitOps. It describes the repository as it is currently organized, explains the runtime flow and business rules, and points to the detailed setup and permission documents.
 
-> **Source of truth:** the ASP.NET Core API and PostgreSQL database. The React client is a user interface, not an authorization boundary. Treat this guide as a map, then confirm the implementation in code before changing behavior.
+> **Important:** Most of this handoff describes an earlier ASP.NET Core design and does not match the current source tree. Use the [current architecture guide](./TRANSITOPS_ARCHITECTURE_GUIDE.md), [README](../README.md), and [Render deployment guide](./DEPLOYMENT.md) as the source of truth. The active API is Node.js/Express with Prisma.
 
 ## Contents
 

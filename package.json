@@ -3,12 +3,18 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
-    "dev": "tsx server.ts",
-    "build": "vite build",
-    "start": "node server.ts",
-    "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "dev": "tsx backend/server.ts",
+    "build": "vite --config frontend/vite.config.ts build",
+    "start": "tsx backend/server.ts",
+    "preview": "vite --config frontend/vite.config.ts preview",
+    "lint": "tsc --noEmit",
+    "db:validate": "prisma validate --config backend/prisma.config.ts",
+    "db:generate": "prisma generate --config backend/prisma.config.ts",
+    "db:push": "prisma db push --config backend/prisma.config.ts"
   },
   "dependencies": {
     "@microsoft/signalr": "^10.0.11",
@@ -20,6 +26,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csv-stringify": "^6.9.0",
+    "dotenv": "^18.0.9",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.546.0",

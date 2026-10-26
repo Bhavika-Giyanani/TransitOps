@@ -1,112 +1,45 @@
-# 2. Architecture: Component and Deployment Diagrams
+# TransitOps Architecture
 
-## 2.1 Component diagram (clean architecture layers)
-
-```mermaid
-flowchart TB
-    subgraph FE["frontend - React 19 + Vite + TypeScript"]
-        direction TB
-        VIEWS["Views & role dashboards<br/>Vehicles, Drivers, Trips, Maintenance,<br/>Expenses, Reports, Analytics, Admin, Onboarding"]
-        CTX["AppContext - auth + data state"]
-        APIJS["services/api.ts - fetch with cookie"]
-        SRJS["services/signalr.ts - @microsoft/signalr"]
-        VIEWS --> CTX --> APIJS
-        CTX --> SRJS
-    end
-
-    BRIDGE["server.ts - Express dev host<br/>serves Vite app, proxies /api and /hubs"]
-
-    subgraph API["TransitOps.Api - ASP.NET Core Web API"]
-        direction TB
-        MW["Middleware: CORS, rate limiting,<br/>JWT cookie auth, exception handler"]
-        CTRL["Controllers<br/>Auth, Vehicles, Drivers, Trips, Maintenance,<br/>Expenses, Kpi, Reports, Onboarding, OrganizationUsers"]
-        HUB["TransitOpsHub - SignalR<br/>groups: tenant_{id}, user_{id}"]
-        SWAG["Swagger UI"]
-        HFD["Hangfire dashboard"]
-        MW --> CTRL
-    end
-
-    subgraph APP["TransitOps.Application"]
-        DTO["DTOs"]
-        VAL["FluentValidation validators"]
-        CSV["CsvHelperService"]
-        PDF["QuestPdfReportService"]
-        IKPI["IKpiService"]
-        ISAAS["ISaasOnboardingService"]
-    end
-
-    subgraph INF["TransitOps.Infrastructure"]
-        DB["TransitOpsDbContext - EF Core + Identity"]
-        KPI["KpiService"]
-        SAAS["SaasOnboardingService<br/>Razorpay + SMTP"]
-        JOBS["HangfireJobs"]
-    end
-
-    subgraph DOM["TransitOps.Domain"]
-        ENT["Entities"]
-        ENUM["Enums"]
-    end
-
-    PG[("PostgreSQL - Supabase")]
-    RZP["Razorpay API - Test Mode"]
-    MAIL["Gmail SMTP"]
-
-    APIJS -- "HTTPS REST + HttpOnly JWT cookie" --> BRIDGE
-    SRJS -- "WebSocket" --> BRIDGE
-    BRIDGE --> MW
-    BRIDGE --> HUB
-    CTRL --> VAL & CSV & PDF & IKPI & ISAAS & DB
-    CTRL -- "broadcast events" --> HUB
-    IKPI -.implements.-> KPI
-    ISAAS -.implements.-> SAAS
-    KPI & SAAS & JOBS --> DB
-    DB --> ENT
-    APP --> DOM
-    INF --> APP
-    DB --> PG
-    JOBS -. "Hangfire storage" .-> PG
-    SAAS --> RZP & MAIL
-```
-
-## 2.2 Deployment diagram
+## Application components
 
 ```mermaid
 flowchart LR
-    subgraph CLIENT["User device"]
-        BROWSER["Web browser<br/>React SPA"]
-    end
+    Browser["Browser<br/>React 19 + TypeScript"]
+    FE["frontend/src<br/>views, components, context,<br/>API client, UI types"]
+    Host["backend/server.ts<br/>Express host"]
+    API["backend/src/modules/<br/>auth, admin, vehicles, drivers,<br/>trips, expenses, reports, ..."]
+    Middleware["backend/src/middleware<br/>JWT authentication and role checks"]
+    Services["backend/src/services<br/>PDF, email, KPI, safety scoring"]
+    Prisma["Prisma Client"]
+    Schema["backend/prisma/schema.prisma"]
+    DB[("PostgreSQL")]
+    SMTP["SMTP provider"]
+    Razorpay["Razorpay"]
+    Socket["Socket.IO"]
 
-    subgraph VERCEL["Vercel"]
-        STATIC["Static frontend build<br/>transit-ops-frontend-beta.vercel.app"]
-    end
-
-    subgraph HOST["API host - Render / Azure App Service / Docker"]
-        DOTNET["ASP.NET Core 10 container<br/>backend/Dockerfile<br/>REST + SignalR + Hangfire server"]
-    end
-
-    subgraph SUPA["Supabase - ap-south-1"]
-        PGDB[("PostgreSQL<br/>app tables + Identity + Hangfire schema")]
-        POOL["Session pooler :5432"]
-    end
-
-    RZP["Razorpay"]
-    GMAIL["smtp.gmail.com :587"]
-
-    BROWSER -- "HTTPS" --> STATIC
-    BROWSER -- "HTTPS /api, WSS /hubs" --> DOTNET
-    DOTNET -- "Npgsql, TLS, max 8 conns" --> POOL --> PGDB
-    DOTNET -- "Orders API + webhooks" --> RZP
-    RZP -- "webhook /api/onboarding/webhook/razorpay" --> DOTNET
-    DOTNET -- "STARTTLS" --> GMAIL
+    Browser --> FE
+    FE -->|"HTTP /api, same origin"| Host
+    FE <-->|"Authenticated realtime"| Socket
+    Host --> API
+    API --> Middleware
+    API --> Services
+    API --> Prisma
+    Prisma --> Schema
+    Prisma --> DB
+    Services --> SMTP
+    Services --> Razorpay
+    Host --> Socket
 ```
 
-### Local development (your laptop)
+## Feature module layout
 
-```mermaid
-flowchart LR
-    B["Browser :3000"] --> EX["npm run dev<br/>Express + Vite :3000"]
-    EX -- "proxy /api, /hubs" --> API["dotnet run<br/>TransitOps.Api :5000"]
-    API --> SB[("Supabase Postgres")]
-    API -. "optional, for webhooks" .- NG["ngrok tunnel"]
-    NG -.- RZ["Razorpay Test Mode"]
-```
+Backend route handlers are grouped by domain under `backend/src/modules/<feature>/`. Shared
+authentication middleware, database setup, realtime support, and services remain in common
+locations. Prisma is the persistence model and its schema lives in `backend/prisma/`.
+
+## Single-service deployment
+
+The root npm manifest coordinates both folders. Vite builds the frontend into root `dist/`;
+`backend/server.ts` serves that static bundle and the API from one Express process. Render's
+`render.yaml` uses `npm run build` and `npm start`, with `/api/health` as its database-aware health
+check.

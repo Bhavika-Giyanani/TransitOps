@@ -1,6 +1,12 @@
 # TransitOps Node.js & Prisma Setup Guide
 
-This guide details the Node.js + Express + Prisma ORM architecture, how to run with SQLite, how to connect with **Supabase (PostgreSQL)**, and how to handle **Razorpay URLs & Webhooks** (ngrok vs deployment).
+This guide details the Node.js + Express + Prisma ORM architecture, how to connect with
+**PostgreSQL/Supabase**, and how to handle Razorpay URLs and webhooks for local and deployed use.
+
+The application is organized as a single-service monorepo: the React frontend is in `frontend/`,
+the Express API and feature modules are in `backend/`, and npm scripts are run from the repository
+root. Render deployment is defined in `render.yaml`; set the environment variables listed in
+`.env.example` in the Render dashboard.
 
 ---
 
@@ -49,9 +55,9 @@ In Supabase (**Project Settings -> Database**), you are provided with two connec
 ### Which one should you provide?
 
 > **Rule of Thumb for Prisma + Supabase:**
-> Provide **BOTH** using Prisma's `directUrl` feature!
-> - Use the **Connection Pooling URL (port 6543)** for runtime queries (`DATABASE_URL`). This prevents connection exhaustion under multiple requests.
-> - Use the **Direct Connection URL (port 5432)** for schema migrations (`DIRECT_URL`). Transaction poolers reject DDL statements and migration advisory locks.
+> Use the Supabase **session pooler** URL for `DATABASE_URL` during runtime and schema pushes.
+> Direct database URLs may resolve only to IPv6 and be unreachable from IPv4-only networks.
+> Prisma rewrites a transaction-pooler `:6543` URL to session mode `:5432` for schema commands.
 
 ### Step-by-Step Supabase Configuration:
 
@@ -61,10 +67,10 @@ In Supabase dashboard: **Project Settings** -> **Database**:
 - Copy the **Session / Transaction Pooler** string (port `6543`).
 - Copy the **Direct Connection** string (port `5432`).
 
-#### Step 2: Configure `prisma/schema.prisma` and `prisma.config.ts`
+#### Step 2: Configure `backend/prisma/schema.prisma` and `backend/prisma.config.ts`
 In newer versions of Prisma, connection parameters have moved out of the schema file to prevent lint warnings:
 
-**In `prisma/schema.prisma`:**
+**In `backend/prisma/schema.prisma`:**
 ```prisma
 datasource db {
   provider = "postgresql"
@@ -75,20 +81,24 @@ generator client {
 }
 ```
 
-**In `prisma.config.ts` (Project Root):**
+**In `backend/prisma.config.ts`:**
 ```typescript
 import { defineConfig } from '@prisma/config';
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   datasource: {
-    url: process.env.DATABASE_URL,
-    directUrl: process.env.DIRECT_URL,
+    url: process.env.DATABASE_URL || process.env.DIRECT_URL,
   },
 });
 ```
 
-**In `src/server/db.ts` (Runtime Connection):**
+The project's config prefers `DATABASE_URL`, the same connection used by the running API. It only
+falls back to `DIRECT_URL` when `DATABASE_URL` is unset. A Supabase direct hostname may resolve
+only to IPv6; a machine or network without IPv6 connectivity will time out even while the project
+and its session pooler are available.
+
+**In `backend/src/db.ts` (Runtime Connection):**
 Prisma 7+ uses database adapters passed to `PrismaClient`:
 ```typescript
 import { PrismaClient } from '@prisma/client';
@@ -105,14 +115,14 @@ export const prisma = new PrismaClient({ adapter });
 ```
 
 #### Step 3: Configure `.env`
-Set your Supabase variables in `.env`:
+Set your PostgreSQL variables in `.env` (or in Render's environment settings):
 
 ```env
-# 1. Connection Pooler (Port 6543)
-DATABASE_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres?pgbouncer=true"
+# Runtime connection (use the Supabase session pooler; port 5432)
+DATABASE_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
 
-# 2. Direct Connection (Port 5432)
-DIRECT_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
+# Optional direct database connection, used only if DATABASE_URL is unset
+DIRECT_URL="postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres"
 ```
 
 *Note: If your database password contains special characters (like `@`, `#`, `!`, `/`), make sure to URL-encode them (e.g., replace `@` with `%40`).*
@@ -120,25 +130,33 @@ DIRECT_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].p
 #### Step 4: Run Migrations
 Push your schema to Supabase:
 ```bash
-npx prisma db push
+npm run db:validate
+npm run db:push
 ```
 
-Prisma CLI automatically reads `prisma.config.ts` to locate your schema and database, and `PrismaClient` executes queries through the high-performance PostgreSQL connection pool!
+Prisma CLI uses `backend/prisma.config.ts` and `backend/prisma/schema.prisma`; `PrismaClient`
+executes runtime queries through the PostgreSQL connection pool.
 
 ---
 
-## 3. Quick Local Start (Current SQLite Setup)
+## 3. Quick Local Start (Current Setup)
 
-If running locally on SQLite before switching to Supabase:
+Configure `.env` with a unique `JWT_SECRET` (at least 32 characters), `DEMO_ACCOUNT_PASSWORD`,
+mail-service credentials, and the database connection before starting the application. Demo
+accounts are seeded only when `DEMO_ACCOUNT_PASSWORD` is present and accept only that configured
+password; no default demo password is accepted. Set `DATABASE_URL` to a PostgreSQL connection.
+
+For the current local setup:
 
 1. **Install Dependencies:**
    ```bash
    npm install
    ```
 
-2. **Generate Database:**
+2. **Generate Prisma Client and update the database schema:**
    ```bash
-   npx prisma db push
+   npm run db:generate
+   npm run db:push
    ```
 
 3. **Start Application:**
@@ -154,15 +172,16 @@ If running locally on SQLite before switching to Supabase:
 
 ## 4. Pre-configured Demo Accounts
 
-All demo accounts are pre-seeded in the database:
+Demo accounts are seeded only when `DEMO_ACCOUNT_PASSWORD` is configured in `.env`. All demo
+accounts use that exact password; there is no hard-coded fallback.
 
-| Role | Email | Password |
-|---|---|---|
-| **Fleet Manager** | `manager@transitops.com` | `TransitOps@2026` |
-| **Driver** | `driver@transitops.com` | `TransitOps@2026` |
-| **Safety Officer** | `safety@transitops.com` | `TransitOps@2026` |
-| **Financial Analyst** | `analyst@transitops.com` | `TransitOps@2026` |
-| **Organization Admin** | `admin@transitops.com` | `TransitOps@2026` |
+| Role | Email |
+|---|---|
+| **Fleet Manager** | `manager@transitops.com` |
+| **Driver** | `driver@transitops.com` |
+| **Safety Officer** | `safety@transitops.com` |
+| **Financial Analyst** | `analyst@transitops.com` |
+| **Organization Admin** | `admin@transitops.com` |
 
 ---
 
@@ -171,14 +190,30 @@ All demo accounts are pre-seeded in the database:
 | Variable | Description | Example / Default |
 |---|---|---|
 | `PORT` | Web & API port | `3000` |
-| `JWT_SECRET` | Secret key for signing JWT tokens | `transitops-jwt-secure-secret-key-2026` |
-| `DATABASE_URL` | App runtime DB URL (SQLite file or Supabase pooler `6543`) | `file:./dev.db` |
-| `DIRECT_URL` | Direct DB URL for Prisma migrations (Supabase port `5432`) | `postgresql://...:5432/postgres` |
+| `JWT_SECRET` | Random secret of at least 32 characters for JWT signing | `replace-with-a-random-secret` |
+| `DEMO_ACCOUNT_PASSWORD` | Sole password accepted by pre-seeded demo accounts | `replace-with-a-strong-password` |
+| `APP_BASE_URL` | Public base URL used in organization setup emails | `http://localhost:3000` |
+| `DATABASE_URL` | PostgreSQL URL used by the running API | `postgresql://...:6543/postgres` |
+| `DIRECT_URL` | Optional direct PostgreSQL URL for Prisma schema commands | `postgresql://...:5432/postgres` |
 | `RAZORPAY_KEY_ID` | Razorpay Key ID | `rzp_test_transitops_demo` |
 | `RAZORPAY_KEY_SECRET` | Razorpay Secret for HMAC verification | `secret_test_transitops_key` |
-| `RAZORPAY_WEBHOOK_SECRET` | Secret configured in Razorpay Webhook settings | `transitops_webhook_secret_2026` |
+| `RAZORPAY_WEBHOOK_SECRET` | Secret configured in Razorpay Webhook settings | `set-a-unique-webhook-secret` |
 | `SMTP_HOST` | SMTP server host | `localhost` |
 | `SMTP_PORT` | SMTP server port | `1025` |
 | `SMTP_USER` | SMTP username | `""` |
 | `SMTP_PASS` | SMTP password | `""` |
 | `SMTP_FROM` | Sender address | `no-reply@transitops.com` |
+
+---
+
+## 6. Render deployment
+
+Create a Render Blueprint using the repository's `render.yaml`. This deploys a single Node web
+service; the build creates the frontend bundle and Prisma Client, and the Express backend serves
+both the API and frontend. Configure the prompted environment variables in Render. Use a PostgreSQL
+service for `DATABASE_URL`, a random `JWT_SECRET` of at least 32 characters, and production SMTP and
+Razorpay credentials for email and live payments. Set `APP_BASE_URL` to the public Render URL.
+
+The Render health check calls `/api/health`, which verifies database connectivity. Apply schema
+changes deliberately with `npm run db:push` against the intended production database; the deploy
+build itself does not mutate the database schema.
