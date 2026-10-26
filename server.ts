@@ -23,7 +23,7 @@ import { onboardingRouter } from './src/server/routes/onboarding';
 
 const app = express();
 const server = http.createServer(app);
-const port = Number(process.env.PORT || 3000);
+const port = 3000;
 
 // Initialize Socket.io Realtime Server
 initRealtime(server);
