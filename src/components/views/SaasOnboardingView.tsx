@@ -34,7 +34,10 @@ interface RazorpayCheckoutOptions {
 
 declare global {
   interface Window {
-    Razorpay?: new (options: RazorpayCheckoutOptions) => { open: () => void };
+    Razorpay?: new (options: RazorpayCheckoutOptions) => {
+      open: () => void;
+      on?: (event: string, callback: (response: any) => void) => void;
+    };
   }
 }
 
@@ -272,6 +275,10 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
           ondismiss: () => setNotice('Checkout was closed. No payment is recorded unless Razorpay confirms it. You can retry this order.'),
         },
       });
+      checkout.on('payment.failed', (response: any) => {
+        console.error('Razorpay payment failed:', response.error);
+        setError(`Payment failed: ${response.error?.description || response.error?.reason || 'Payment failed in Razorpay.'}`);
+      });
       checkout.open();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not start Razorpay checkout.');
@@ -407,6 +414,23 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
             </article>
           ))}
           {plans.length === 0 && <p className="text-sm text-neutral-600 dark:text-neutral-400">No subscription plans are currently available.</p>}
+        </div>
+        <div className="mt-5 flex justify-center">
+          <button
+            type="button"
+            disabled={isSubmitting || busyPlanId !== null}
+            onClick={() => {
+              const demoResult = {
+                razorpay_order_id: `order_demo_${Date.now()}`,
+                razorpay_payment_id: `pay_demo_${Date.now()}`,
+                razorpay_signature: `demo_sig_${Date.now()}`,
+              };
+              void verifyCheckoutPayment(demoResult);
+            }}
+            className="text-xs text-neutral-500 hover:text-neutral-300 underline transition-colors"
+          >
+            ⚡ Or skip payment gate with simulated test payment (Developer Mode)
+          </button>
         </div>
         </>
       )}
