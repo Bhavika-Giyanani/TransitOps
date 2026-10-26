@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
@@ -7,9 +8,22 @@ const connectionString =
   process.env.DATABASE_URL ||
   'postgresql://postgres:postgres@localhost:5432/postgres';
 
+const isRemoteOrSupabase =
+  connectionString.includes('supabase.com') ||
+  connectionString.includes('supabase.co') ||
+  connectionString.includes('pooler.supabase') ||
+  connectionString.includes('sslmode=require') ||
+  process.env.NODE_ENV === 'production';
+
 const pool = new pg.Pool({
   connectionString,
-  ssl: connectionString.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
+  ssl: isRemoteOrSupabase ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+});
+
+pool.on('error', (err) => {
+  console.warn('[TransitOps DB Pool Notice]', err.message);
 });
 
 const adapter = new PrismaPg(pool);
