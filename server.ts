@@ -84,12 +84,14 @@ app.get('/hubs/transitops', (req: Request, res: Response) => {
 
 // Vite & Static Asset Handling
 async function startServer() {
-  // Automatically ensure SQLite database is seeded with demo accounts & fleet
-  try {
-    await seedDatabaseIfEmpty();
-  } catch (err) {
-    console.error('[TransitOps Database Error]', err);
-  }
+  // Seed database in background with timeout protection
+  const seedWithTimeout = Promise.race([
+    seedDatabaseIfEmpty(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Database seed timed out')), 5000)),
+  ]);
+  seedWithTimeout.catch((err) => {
+    console.warn('[TransitOps Database Notice] Could not seed database immediately:', err?.message || err);
+  });
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

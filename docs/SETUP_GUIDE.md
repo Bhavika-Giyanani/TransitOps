@@ -61,14 +61,13 @@ In Supabase dashboard: **Project Settings** -> **Database**:
 - Copy the **Session / Transaction Pooler** string (port `6543`).
 - Copy the **Direct Connection** string (port `5432`).
 
-#### Step 2: Update `prisma/schema.prisma`
-Add `directUrl` to the datasource block:
+#### Step 2: Configure `prisma/schema.prisma` and `prisma.config.ts`
+In newer versions of Prisma, connection parameters have moved out of the schema file to prevent lint warnings:
 
+**In `prisma/schema.prisma`:**
 ```prisma
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 generator client {
@@ -76,14 +75,27 @@ generator client {
 }
 ```
 
+**In `prisma.config.ts` (Project Root):**
+```typescript
+import { defineConfig } from '@prisma/config';
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  datasource: {
+    url: process.env.DATABASE_URL,
+    directUrl: process.env.DIRECT_URL,
+  },
+});
+```
+
 #### Step 3: Configure `.env`
-Set both variables in `.env`:
+Set your Supabase variables in `.env`:
 
 ```env
-# 1. Connection Pooler (Transaction mode, port 6543 with pgbouncer parameter)
+# 1. Connection Pooler (Port 6543)
 DATABASE_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres?pgbouncer=true"
 
-# 2. Direct Connection (Port 5432, without pooler)
+# 2. Direct Connection (Port 5432)
 DIRECT_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
 ```
 
