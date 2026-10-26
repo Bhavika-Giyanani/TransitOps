@@ -88,6 +88,22 @@ export default defineConfig({
 });
 ```
 
+**In `src/server/db.ts` (Runtime Connection):**
+Prisma 7+ uses database adapters passed to `PrismaClient`:
+```typescript
+import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
+});
+
+const adapter = new PrismaPg(pool);
+export const prisma = new PrismaClient({ adapter });
+```
+
 #### Step 3: Configure `.env`
 Set your Supabase variables in `.env`:
 
@@ -107,7 +123,7 @@ Push your schema to Supabase:
 npx prisma db push
 ```
 
-Prisma will automatically use `DIRECT_URL` (port 5432) to create tables and types, and use `DATABASE_URL` (port 6543) for application queries!
+Prisma CLI automatically reads `prisma.config.ts` to locate your schema and database, and `PrismaClient` executes queries through the high-performance PostgreSQL connection pool!
 
 ---
 

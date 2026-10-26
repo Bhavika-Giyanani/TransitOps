@@ -1,7 +1,20 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
 import bcrypt from 'bcryptjs';
 
-export const prisma = new PrismaClient();
+const connectionString =
+  process.env.DATABASE_URL ||
+  'postgresql://postgres:postgres@localhost:5432/postgres';
+
+const pool = new pg.Pool({
+  connectionString,
+  ssl: connectionString.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
+});
+
+const adapter = new PrismaPg(pool);
+
+export const prisma = new PrismaClient({ adapter });
 
 export async function seedDatabaseIfEmpty() {
   const userCount = await prisma.user.count();
