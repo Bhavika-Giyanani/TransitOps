@@ -155,3 +155,35 @@ onboardingRouter.post('/retry-emails', (_req: Request, res: Response) => {
 onboardingRouter.post('/complete-account-setup', async (_req: Request, res: Response) => {
   return res.json({ email: 'admin@transitops.com' });
 });
+
+onboardingRouter.post('/webhook', async (req: Request, res: Response) => {
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || RAZORPAY_KEY_SECRET;
+  const signature = req.headers['x-razorpay-signature'] as string | undefined;
+
+  if (signature) {
+    const shasum = crypto.createHmac('sha256', webhookSecret);
+    shasum.update(JSON.stringify(req.body));
+    const digest = shasum.digest('hex');
+    if (digest !== signature) {
+      console.warn('[Razorpay Webhook] Received webhook with invalid signature.');
+      return res.status(400).json({ status: 'invalid_signature' });
+    }
+  }
+
+  const event = req.body?.event;
+  const payload = req.body?.payload;
+  console.log(`[Razorpay Webhook] Processed event: ${event}`);
+
+  if (event === 'payment.captured' || event === 'order.paid') {
+    const payment = payload?.payment?.entity;
+    if (payment?.order_id) {
+      await prisma.purchaseSession.updateMany({
+        where: { orderId: payment.order_id },
+        data: { paymentVerified: true, paymentId: payment.id },
+      }).catch(() => {});
+    }
+  }
+
+  return res.json({ status: 'ok', received: true });
+});
+

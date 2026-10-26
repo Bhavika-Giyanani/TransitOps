@@ -1,50 +1,130 @@
 # TransitOps Node.js & Prisma Setup Guide
 
-This guide details the Node.js + Express + Prisma ORM architecture, how to run with the SQLite database, and how to seamlessly transition to **Supabase (PostgreSQL)** when ready.
+This guide details the Node.js + Express + Prisma ORM architecture, how to run with SQLite, how to connect with **Supabase (PostgreSQL)**, and how to handle **Razorpay URLs & Webhooks** (ngrok vs deployment).
 
 ---
 
-## 1. Architecture Overview
+## 1. Razorpay Integration: URLs, Local Testing & Deployment
 
-| Component | Technology | Purpose |
+### Where Razorpay asks for a Project URL:
+Razorpay requires URLs in two distinct places:
+
+1. **Website / App URL (Under Account Settings -> Business Website):**
+   - **In Test Mode:** You can enter `http://localhost:3000` or your temporary dev URL (e.g., `https://ais-dev-5ilsv7vptyh373nymyvf65-81342711457.asia-southeast1.run.app`). Razorpay accepts any domain in Test Mode.
+   - **In Live Mode:** You must provide your deployed production domain (e.g. `https://transitops.yourcompany.com`).
+
+2. **Webhook URL (Under Settings -> Webhooks):**
+   - Webhooks are server-to-server notifications sent by Razorpay (e.g., `payment.captured`, `order.paid`).
+   - Because Razorpay's servers cannot reach `http://localhost:3000` directly, use the strategy below depending on your stage:
+
+### Should you deploy or use ngrok?
+
+| Scenario | Recommended Approach | URL to Provide to Razorpay |
 |---|---|---|
-| **Runtime & Server** | Node.js (v20+ / v22), Express.js | Full-stack REST API and SSR/Vite dev hosting |
-| **ORM & Database** | Prisma ORM with SQLite (`prisma/dev.db`) | Relational modeling with zero-config local persistence |
-| **Future Database** | Supabase (PostgreSQL) | Fully compatible Prisma schema ready for PostgreSQL |
-| **Realtime Engine** | Socket.io (`/socket.io/`) | Bidirectional WebSocket dispatch, status changes & alerts |
-| **Authentication** | JWT (`jsonwebtoken`) & bcryptjs | Bearer token & HTTP cookie role-based auth |
-| **API Documentation** | Swagger UI (`swagger-ui-express`) | Interactive OpenAPI 3.0 docs at `/swagger` & `/api-docs` |
-| **Email / SMTP** | Nodemailer | Commercial licence renewal notices & onboarding codes |
-| **PDF Generation** | PDFKit | Downloadable Financial Ledgers, Fleet ROI & Trip Receipts |
-| **CSV Generation** | csv-stringify | Structured ledger and fleet export downloads |
-| **Payment Gateway** | Razorpay Node.js Signature Verification | HMAC-SHA256 verification for SaaS onboarding checkouts |
+| **Testing Standard Modal Checkout** | **No ngrok or deployment needed!** Test locally on `http://localhost:3000`. Razorpay's frontend checkout modal communicates via the browser, which talks directly to your local backend at `/api/onboarding/verify-payment`. | `http://localhost:3000` (or leave as test URL) |
+| **Testing Server-Side Webhooks locally** | **Use ngrok (or cloudflared / Localtunnel)**. Run `ngrok http 3000` to create a secure HTTPS tunnel to your machine. | `https://<your-subdomain>.ngrok-free.app/api/onboarding/webhook` |
+| **Production / Client Demo** | **Deploy to cloud** (Render, Cloud Run, Railway, or VPS). | `https://your-production-app.com/api/onboarding/webhook` |
+
+#### How to test with ngrok:
+1. Start TransitOps: `npm run dev` (running on port 3000).
+2. Start ngrok in a separate terminal:
+   ```bash
+   ngrok http 3000
+   ```
+3. Copy the Forwarding URL (e.g., `https://a1b2-c3d4.ngrok-free.app`).
+4. In your [Razorpay Dashboard](https://dashboard.razorpay.com/) (Test Mode) -> **Settings** -> **Webhooks** -> **Add New Webhook**:
+   - **Webhook URL:** `https://a1b2-c3d4.ngrok-free.app/api/onboarding/webhook`
+   - **Secret:** Enter a secret (e.g. `transitops_webhook_secret_2026`) and add it to `.env` as `RAZORPAY_WEBHOOK_SECRET`.
+   - **Alert Email:** Your email.
+   - **Active Events:** Select `payment.captured`, `order.paid`.
 
 ---
 
-## 2. Quick Local Start (SQLite)
+## 2. Supabase Database URL: Direct Connection vs. Connection Pooler
+
+In Supabase (**Project Settings -> Database**), you are provided with two connection URLs:
+1. **Connection Pooling URL (Port 6543, Supavisor / PgBouncer)**
+2. **Direct Connection URL (Port 5432, Direct Postgres)**
+
+### Which one should you provide?
+
+> **Rule of Thumb for Prisma + Supabase:**
+> Provide **BOTH** using Prisma's `directUrl` feature!
+> - Use the **Connection Pooling URL (port 6543)** for runtime queries (`DATABASE_URL`). This prevents connection exhaustion under multiple requests.
+> - Use the **Direct Connection URL (port 5432)** for schema migrations (`DIRECT_URL`). Transaction poolers reject DDL statements and migration advisory locks.
+
+### Step-by-Step Supabase Configuration:
+
+#### Step 1: Copy Credentials from Supabase
+In Supabase dashboard: **Project Settings** -> **Database**:
+- Under **Connection string**, select **URI**.
+- Copy the **Session / Transaction Pooler** string (port `6543`).
+- Copy the **Direct Connection** string (port `5432`).
+
+#### Step 2: Update `prisma/schema.prisma`
+Add `directUrl` to the datasource block:
+
+```prisma
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+```
+
+#### Step 3: Configure `.env`
+Set both variables in `.env`:
+
+```env
+# 1. Connection Pooler (Transaction mode, port 6543 with pgbouncer parameter)
+DATABASE_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres?pgbouncer=true"
+
+# 2. Direct Connection (Port 5432, without pooler)
+DIRECT_URL="postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
+```
+
+*Note: If your database password contains special characters (like `@`, `#`, `!`, `/`), make sure to URL-encode them (e.g., replace `@` with `%40`).*
+
+#### Step 4: Run Migrations
+Push your schema to Supabase:
+```bash
+npx prisma db push
+```
+
+Prisma will automatically use `DIRECT_URL` (port 5432) to create tables and types, and use `DATABASE_URL` (port 6543) for application queries!
+
+---
+
+## 3. Quick Local Start (Current SQLite Setup)
+
+If running locally on SQLite before switching to Supabase:
 
 1. **Install Dependencies:**
    ```bash
    npm install
    ```
 
-2. **Generate Prisma Client and Push Schema:**
+2. **Generate Database:**
    ```bash
    npx prisma db push
    ```
-   *Note: On initial startup, TransitOps automatically checks and seeds the database with demo accounts, the 12-vehicle fleet, drivers, trips, maintenance orders, expenses, and plans.*
 
-3. **Start Development Server:**
+3. **Start Application:**
    ```bash
    npm run dev
    ```
-   - Application UI: [http://localhost:3000](http://localhost:3000)
-   - Interactive Swagger Docs: [http://localhost:3000/swagger](http://localhost:3000/swagger)
-   - Raw OpenAPI JSON: [http://localhost:3000/api/docs/swagger.json](http://localhost:3000/api/docs/swagger.json)
+
+- Web App: [http://localhost:3000](http://localhost:3000)
+- Interactive Swagger UI: [http://localhost:3000/swagger](http://localhost:3000/swagger)
+- Raw OpenAPI JSON: [http://localhost:3000/api/docs/swagger.json](http://localhost:3000/api/docs/swagger.json)
 
 ---
 
-## 3. Pre-configured Demo Accounts
+## 4. Pre-configured Demo Accounts
 
 All demo accounts are pre-seeded in the database:
 
@@ -58,69 +138,19 @@ All demo accounts are pre-seeded in the database:
 
 ---
 
-## 4. How to Migrate to Supabase (PostgreSQL)
-
-When you are ready to switch from local SQLite to Supabase:
-
-### Step 1: Create a Supabase Project
-1. Log in to [supabase.com](https://supabase.com) and create a new project.
-2. Under **Project Settings -> Database**, copy the **URI Connection String** (Transaction pooler or direct connection, e.g., `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres`).
-
-### Step 2: Update `prisma/schema.prisma`
-Change the `datasource db` block:
-
-```prisma
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-```
-
-### Step 3: Configure `.env`
-Add your Supabase connection string to `.env`:
-```env
-DATABASE_URL="postgresql://postgres.yourprojectref:yourpassword@aws-0-region.pooler.supabase.com:6543/postgres?pgbouncer=true"
-DIRECT_URL="postgresql://postgres.yourprojectref:yourpassword@aws-0-region.pooler.supabase.com:5432/postgres"
-```
-
-### Step 4: Run Migrations
-Push the Prisma models to your Supabase PostgreSQL instance:
-```bash
-npx prisma db push
-```
-Or create migration files:
-```bash
-npx prisma migrate dev --name init_supabase
-```
-
-The database models, relations, and types remain 100% identical.
-
----
-
 ## 5. Environment Variables Reference
 
-| Variable | Default Value | Description |
+| Variable | Description | Example / Default |
 |---|---|---|
-| `PORT` | `3000` | Port for the Express server and Vite frontend |
-| `JWT_SECRET` | `transitops-jwt-secure-secret-key-2026` | Secret key used to sign and verify JWT authentication tokens |
-| `DATABASE_URL` | `file:./dev.db` | Database connection string (SQLite file or PostgreSQL URL) |
-| `SMTP_HOST` | `localhost` | SMTP host for email notifications |
-| `SMTP_PORT` | `1025` | SMTP port |
-| `SMTP_USER` | `""` | SMTP username |
-| `SMTP_PASS` | `""` | SMTP password |
-| `SMTP_FROM` | `no-reply@transitops.com` | Default sender email |
-| `RAZORPAY_KEY_ID` | `rzp_test_transitops_demo` | Razorpay Key ID for payments |
-| `RAZORPAY_KEY_SECRET` | `secret_test_transitops_key` | Razorpay Key Secret for HMAC verification |
-
----
-
-## 6. Realtime Events with Socket.io
-
-The backend streams events on the root Socket.io namespace (`/socket.io/`):
-- `trip_dispatched`: Dispatched trip payload
-- `trip_completed`: Completed trip payload with final odometer
-- `vehicle_status`: `{ vehicleId, status, tenantId }`
-- `driver_status`: `{ driverId, status, tenantId }`
-- `maintenance_updated`: Maintenance work order updates
-- `expense_updated`: Fuel or operational expense logged
-- `notification`: In-app compliance & alert toasts
+| `PORT` | Web & API port | `3000` |
+| `JWT_SECRET` | Secret key for signing JWT tokens | `transitops-jwt-secure-secret-key-2026` |
+| `DATABASE_URL` | App runtime DB URL (SQLite file or Supabase pooler `6543`) | `file:./dev.db` |
+| `DIRECT_URL` | Direct DB URL for Prisma migrations (Supabase port `5432`) | `postgresql://...:5432/postgres` |
+| `RAZORPAY_KEY_ID` | Razorpay Key ID | `rzp_test_transitops_demo` |
+| `RAZORPAY_KEY_SECRET` | Razorpay Secret for HMAC verification | `secret_test_transitops_key` |
+| `RAZORPAY_WEBHOOK_SECRET` | Secret configured in Razorpay Webhook settings | `transitops_webhook_secret_2026` |
+| `SMTP_HOST` | SMTP server host | `localhost` |
+| `SMTP_PORT` | SMTP server port | `1025` |
+| `SMTP_USER` | SMTP username | `""` |
+| `SMTP_PASS` | SMTP password | `""` |
+| `SMTP_FROM` | Sender address | `no-reply@transitops.com` |
