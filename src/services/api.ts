@@ -90,6 +90,8 @@ export interface PaymentVerification {
   setupEmailSent: boolean;
   setupCompleted: boolean;
   message: string;
+  accountToken?: string;
+  setupUrl?: string;
 }
 
 export class ApiRequestError extends Error {

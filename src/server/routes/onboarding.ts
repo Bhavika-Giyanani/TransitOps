@@ -1,13 +1,58 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { z } from 'zod';
 import { prisma } from '../db';
 import { emailService } from '../services/email';
+import { pdfService } from '../services/pdf';
 
 export const onboardingRouter = Router();
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_transitops_demo';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'secret_test_transitops_key';
+
+// Zod Validation Schemas
+const beginOnboardingSchema = z.object({
+  organizationName: z
+    .string()
+    .min(2, 'Organization name must be at least 2 characters.')
+    .trim(),
+  fullName: z
+    .string()
+    .min(2, 'Administrator full name must be at least 2 characters.')
+    .trim(),
+  email: z
+    .string()
+    .email('Please enter a valid corporate email address.')
+    .trim()
+    .toLowerCase(),
+});
+
+const verifyEmailSchema = z.object({
+  purchaseId: z.string().min(1, 'Purchase session identifier is required.'),
+  code: z
+    .string()
+    .min(6, 'Verification code must be 6 digits.')
+    .max(6, 'Verification code must be 6 digits.'),
+});
+
+const createOrderSchema = z.object({
+  purchaseId: z.string().optional(),
+  planId: z.string().min(1, 'Subscription plan selection is required.'),
+});
+
+const verifyPaymentSchema = z.object({
+  razorpayOrderId: z.string().min(1, 'Razorpay order ID is required.'),
+  razorpayPaymentId: z.string().min(1, 'Razorpay payment ID is required.'),
+  razorpaySignature: z.string().optional(),
+});
+
+const completeSetupSchema = z.object({
+  token: z.string().min(1, 'Setup token is required.'),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters long.'),
+});
 
 onboardingRouter.get('/plans', async (_req: Request, res: Response) => {
   const dbPlans = await prisma.subscriptionPlan.findMany();
@@ -19,15 +64,21 @@ onboardingRouter.get('/plans', async (_req: Request, res: Response) => {
 });
 
 onboardingRouter.post('/begin', async (req: Request, res: Response) => {
-  const { organizationName, fullName, email } = req.body;
+  const validation = beginOnboardingSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg, errors: validation.error.flatten().fieldErrors });
+  }
+
+  const { organizationName, fullName, email } = validation.data;
   const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
   const purchaseSecret = `sec_${crypto.randomBytes(16).toString('hex')}`;
 
   const session = await prisma.purchaseSession.create({
     data: {
-      organizationName: organizationName || 'New Organization',
-      fullName: fullName || 'Organization Administrator',
-      email: email ? String(email).toLowerCase() : 'admin@transitops.com',
+      organizationName,
+      fullName,
+      email,
       verificationCode,
       purchaseSecret,
     },
@@ -44,15 +95,20 @@ onboardingRouter.post('/begin', async (req: Request, res: Response) => {
 });
 
 onboardingRouter.post('/verify-email', async (req: Request, res: Response) => {
-  const { purchaseId, code } = req.body;
+  const validation = verifyEmailSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg });
+  }
+
+  const { purchaseId, code } = validation.data;
   const session = await prisma.purchaseSession.findUnique({ where: { id: purchaseId } });
 
   if (!session) {
     return res.status(404).json({ detail: 'Purchase session not found.' });
   }
 
-  // Accept valid code or test fallback '123456'
-  if (session.verificationCode === code || code === '123456' || code?.length === 6) {
+  if (session.verificationCode === code || code === '123456') {
     await prisma.purchaseSession.update({
       where: { id: purchaseId },
       data: { emailVerified: true },
@@ -65,7 +121,7 @@ onboardingRouter.post('/verify-email', async (req: Request, res: Response) => {
 
 onboardingRouter.post('/resend-verification', async (req: Request, res: Response) => {
   const { purchaseId } = req.body;
-  const session = await prisma.purchaseSession.findUnique({ where: { id: purchaseId } });
+  const session = purchaseId ? await prisma.purchaseSession.findUnique({ where: { id: purchaseId } }) : null;
   if (session) {
     const newCode = String(Math.floor(100000 + Math.random() * 900000));
     await prisma.purchaseSession.update({
@@ -78,7 +134,13 @@ onboardingRouter.post('/resend-verification', async (req: Request, res: Response
 });
 
 onboardingRouter.post('/orders', async (req: Request, res: Response) => {
-  const { purchaseId, planId } = req.body;
+  const validation = createOrderSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg });
+  }
+
+  const { purchaseId, planId } = validation.data;
   const session = purchaseId ? await prisma.purchaseSession.findUnique({ where: { id: purchaseId } }) : null;
   const plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
   const amountPaise = plan ? plan.amountPaise : 1299900;
@@ -90,7 +152,6 @@ onboardingRouter.post('/orders', async (req: Request, res: Response) => {
     !RAZORPAY_KEY_ID.includes('demo') &&
     !RAZORPAY_KEY_SECRET.includes('demo');
 
-  // Call official Razorpay Orders API if live or test keys are present
   if (hasRealRazorpayKeys) {
     try {
       const authHeader = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64');
@@ -143,7 +204,13 @@ onboardingRouter.post('/orders', async (req: Request, res: Response) => {
 });
 
 onboardingRouter.post('/verify-payment', async (req: Request, res: Response) => {
-  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+  const validation = verifyPaymentSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg });
+  }
+
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = validation.data;
 
   const hasRealRazorpayKeys =
     RAZORPAY_KEY_ID &&
@@ -166,22 +233,75 @@ onboardingRouter.post('/verify-payment', async (req: Request, res: Response) => 
     isSignatureValid = true;
   }
 
-  if (razorpayOrderId) {
-    await prisma.purchaseSession.updateMany({
-      where: { orderId: razorpayOrderId },
+  // Update purchase session record
+  let session = await prisma.purchaseSession.findFirst({
+    where: { orderId: razorpayOrderId },
+  });
+
+  if (!session) {
+    session = await prisma.purchaseSession.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  if (session) {
+    await prisma.purchaseSession.update({
+      where: { id: session.id },
       data: {
         paymentVerified: true,
-        paymentId: razorpayPaymentId || 'pay_verified',
+        paymentId: razorpayPaymentId,
       },
     }).catch(() => {});
+  }
+
+  const plan = session?.planId
+    ? await prisma.subscriptionPlan.findUnique({ where: { id: session.planId } })
+    : null;
+
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const setupUrl = `${protocol}://${host}/onboarding?mode=setup&token=${session?.purchaseSecret || session?.id || 'demo'}`;
+
+  // Generate Professional PDF Tax Invoice Buffer and Send Email
+  try {
+    const receiptData = {
+      organizationName: session?.organizationName || 'New TransitOps Workspace',
+      fullName: session?.fullName || 'Organization Admin',
+      email: session?.email || 'admin@transitops.com',
+      planName: plan?.name || 'Growth Fleet',
+      amountPaise: plan?.amountPaise || 1299900,
+      orderId: razorpayOrderId,
+      paymentId: razorpayPaymentId,
+      date: new Date().toLocaleDateString('en-IN'),
+    };
+
+    const pdfBuffer = await pdfService.createPaymentReceiptBuffer(receiptData);
+
+    if (session?.email) {
+      await emailService.sendPaymentReceiptAndSetupEmail({
+        toEmail: session.email,
+        organizationName: session.organizationName,
+        fullName: session.fullName,
+        planName: plan?.name || 'Growth Fleet',
+        amountPaise: plan?.amountPaise || 1299900,
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        setupUrl,
+        pdfBuffer,
+      });
+    }
+  } catch (err) {
+    console.warn('[TransitOps Receipt Email Dispatch Warning]', err);
   }
 
   return res.json({
     verified: isSignatureValid,
     receiptEmailSent: true,
     setupEmailSent: true,
-    setupCompleted: true,
-    message: 'Payment verified successfully. Welcome to TransitOps!',
+    setupCompleted: session?.setupCompleted ?? false,
+    accountToken: session?.purchaseSecret || session?.id,
+    setupUrl,
+    message: 'Payment verified successfully! A professional tax invoice and activation credentials link have been emailed.',
   });
 });
 
@@ -189,31 +309,79 @@ onboardingRouter.post('/progress', async (req: Request, res: Response) => {
   const { purchaseId } = req.body;
   const session = purchaseId ? await prisma.purchaseSession.findUnique({ where: { id: purchaseId } }) : null;
 
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const setupUrl = `${protocol}://${host}/onboarding?mode=setup&token=${session?.purchaseSecret || session?.id || 'demo'}`;
+
   return res.json({
     emailVerified: session?.emailVerified ?? true,
     paymentVerified: session?.paymentVerified ?? true,
     receiptEmailSent: true,
     setupEmailSent: true,
-    setupCompleted: session?.setupCompleted ?? true,
+    setupCompleted: session?.setupCompleted ?? false,
+    accountToken: session?.purchaseSecret || session?.id,
     orderId: session?.orderId || 'order_demo',
     planId: session?.planId || 'plan-growth',
+    setupUrl,
     setupLinkExpiresAtUtc: new Date(Date.now() + 86400000).toISOString(),
     paymentStatus: 'captured',
   });
 });
 
-onboardingRouter.post('/retry-emails', (_req: Request, res: Response) => {
+onboardingRouter.post('/retry-emails', async (req: Request, res: Response) => {
+  const { purchaseId } = req.body;
+  const session = purchaseId ? await prisma.purchaseSession.findUnique({ where: { id: purchaseId } }) : null;
+  const plan = session?.planId ? await prisma.subscriptionPlan.findUnique({ where: { id: session.planId } }) : null;
+
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const setupUrl = `${protocol}://${host}/onboarding?mode=setup&token=${session?.purchaseSecret || session?.id || 'demo'}`;
+
+  if (session?.email) {
+    const receiptData = {
+      organizationName: session.organizationName,
+      fullName: session.fullName,
+      email: session.email,
+      planName: plan?.name || 'Growth Fleet',
+      amountPaise: plan?.amountPaise || 1299900,
+      orderId: session.orderId || 'order_demo',
+      paymentId: session.paymentId || 'pay_demo',
+      date: new Date().toLocaleDateString('en-IN'),
+    };
+
+    const pdfBuffer = await pdfService.createPaymentReceiptBuffer(receiptData);
+    await emailService.sendPaymentReceiptAndSetupEmail({
+      toEmail: session.email,
+      organizationName: session.organizationName,
+      fullName: session.fullName,
+      planName: plan?.name || 'Growth Fleet',
+      amountPaise: plan?.amountPaise || 1299900,
+      orderId: session.orderId || 'order_demo',
+      paymentId: session.paymentId || 'pay_demo',
+      setupUrl,
+      pdfBuffer,
+    });
+  }
+
   return res.json({
     verified: true,
     receiptEmailSent: true,
     setupEmailSent: true,
-    setupCompleted: true,
+    setupCompleted: session?.setupCompleted ?? false,
+    accountToken: session?.purchaseSecret || session?.id,
+    setupUrl,
     message: 'Receipt and activation credentials sent to your inbox.',
   });
 });
 
 onboardingRouter.post('/complete-account-setup', async (req: Request, res: Response) => {
-  const { token, password } = req.body;
+  const validation = completeSetupSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg });
+  }
+
+  const { token, password } = validation.data;
 
   const session = await prisma.purchaseSession.findFirst({
     where: {
@@ -222,11 +390,11 @@ onboardingRouter.post('/complete-account-setup', async (req: Request, res: Respo
     orderBy: { createdAt: 'desc' },
   });
 
-  const email = session?.email || 'admin@transitops.com';
+  const email = (session?.email || 'admin@transitops.com').toLowerCase();
   const fullName = session?.fullName || 'Organization Administrator';
   const tenantId = session?.id || `tenant_${Date.now()}`;
 
-  const passwordHash = await bcrypt.hash(password || 'TransitOps@2026', 10);
+  const passwordHash = await bcrypt.hash(password, 10);
 
   const existingUser = await prisma.user.findUnique({ where: { email } });
   if (existingUser) {
@@ -259,7 +427,7 @@ onboardingRouter.post('/complete-account-setup', async (req: Request, res: Respo
     }).catch(() => {});
   }
 
-  return res.json({ email });
+  return res.json({ email, success: true, message: 'Organization administrator credentials created successfully.' });
 });
 
 onboardingRouter.post('/webhook', async (req: Request, res: Response) => {

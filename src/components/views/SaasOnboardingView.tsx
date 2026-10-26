@@ -76,7 +76,7 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
   const { setActiveView, login } = useApp();
   const { theme } = useTheme();
   const isDark = theme === 'dark';
-  const [mode] = useState(initialMode);
+  const [mode, setMode] = useState<OnboardingMode>(initialMode);
   const [step, setStep] = useState<PurchaseStep>('details');
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState(
@@ -85,9 +85,18 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
   const [purchase, setPurchase] = useState<PurchaseSession | null>(null);
   const [pendingPayment, setPendingPayment] = useState<RazorpayCheckoutResult | null>(null);
   const [verificationCode, setVerificationCode] = useState('');
-  const [accountToken] = useState(
-    new URLSearchParams(window.location.search).get('token') ?? '',
-  );
+  const [accountToken, setAccountToken] = useState<string>(() => {
+    const urlToken = new URLSearchParams(window.location.search).get('token');
+    if (urlToken) return urlToken;
+    try {
+      const saved = sessionStorage.getItem(PURCHASE_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.purchaseSecret || parsed.id || '';
+      }
+    } catch {}
+    return '';
+  });
   const [organizationName, setOrganizationName] = useState('');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -220,6 +229,9 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
       setPendingPayment(null);
       setStep('paid');
       setNotice(verified.message);
+      if (verified.accountToken) {
+        setAccountToken(verified.accountToken);
+      }
       try { sessionStorage.removeItem(PENDING_PAYMENT_STORAGE_KEY); } catch {
         setError('Payment was verified, but temporary payment details could not be cleared from this browser.');
       }
@@ -439,23 +451,57 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
         <div className="space-y-4">
           <div className={`rounded-xl border p-5 ${cardStyle}`}>
             <CheckCircle2 className="mb-2 h-8 w-8 text-emerald-500" />
-            <h2 className="text-lg font-bold">Payment verified by TransitOps</h2>
-            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{paymentResult?.message ?? 'Your purchase is recorded.'}</p>
-            <p className="mt-3 text-xs text-neutral-600 dark:text-neutral-400">We never send passwords by email. Use the separate, expiring setup link sent to your verified address.</p>
+            <h2 className="text-xl font-bold">Payment Verified & Workspace Activated</h2>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              {paymentResult?.message ?? 'Your purchase is confirmed and recorded.'}
+            </p>
+            <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 dark:text-emerald-400">
+              ✉️ A professional payment receipt and activation link have also been sent to <strong>{email || 'your registered address'}</strong>.
+            </div>
           </div>
-          {pendingPayment && (
-            <button disabled={isSubmitting} onClick={() => void verifyCheckoutPayment(pendingPayment)}
-              className={`w-full rounded-xl border px-4 py-3 text-sm font-bold disabled:opacity-50 ${cardStyle}`}>
-              {isSubmitting ? 'Verifying payment…' : 'Retry payment verification'}
-            </button>
-          )}
+
+          {/* Action 1: Immediate Setup Password Button */}
+          <button
+            onClick={() => {
+              if (paymentResult?.accountToken || purchase?.purchaseSecret || purchase?.purchaseId) {
+                setAccountToken(paymentResult?.accountToken || purchase?.purchaseSecret || purchase?.purchaseId || '');
+              }
+              setMode('setup');
+            }}
+            className={`w-full rounded-xl px-4 py-3.5 text-sm font-bold shadow-md transition-all ${primaryStyle}`}
+          >
+            🔑 Set Up Organization Admin Password Now &rarr;
+          </button>
+
+          {/* Action 2: Download Tax Invoice PDF */}
+          <button
+            type="button"
+            onClick={() => {
+              const orderId = pendingPayment?.razorpay_order_id || '';
+              const purchaseId = purchase?.purchaseId || '';
+              window.open(`/api/reports/export/pdf/payment-receipt?orderId=${encodeURIComponent(orderId)}&purchaseId=${encodeURIComponent(purchaseId)}`, '_blank');
+            }}
+            className={`flex items-center justify-center gap-2 w-full rounded-xl border px-4 py-3 text-sm font-semibold ${cardStyle} hover:bg-neutral-800/10 transition-colors`}
+          >
+            📄 Download Official Tax Invoice (PDF)
+          </button>
+
           {paymentResult && (!paymentResult.receiptEmailSent || !paymentResult.setupCompleted) && (
-            <button disabled={isSubmitting} onClick={() => void retryEmailDelivery()}
-              className={`w-full rounded-xl border px-4 py-3 text-sm font-bold disabled:opacity-50 ${cardStyle}`}>
-              {isSubmitting ? 'Sending email…' : paymentResult.setupEmailSent ? 'Resend setup link / receipt' : 'Retry receipt and setup email'}
+            <button
+              disabled={isSubmitting}
+              onClick={() => void retryEmailDelivery()}
+              className={`w-full rounded-xl border px-4 py-2.5 text-xs font-semibold disabled:opacity-50 ${cardStyle}`}
+            >
+              {isSubmitting ? 'Sending email…' : paymentResult.setupEmailSent ? 'Resend activation email' : 'Retry receipt & activation email'}
             </button>
           )}
-          <button onClick={() => setActiveView('login')} className={`w-full rounded-xl px-4 py-3 text-sm font-bold ${primaryStyle}`}>Go to sign in</button>
+
+          <button
+            onClick={() => setActiveView('login')}
+            className="w-full py-2 text-xs font-medium text-neutral-500 hover:text-neutral-400"
+          >
+            Already configured credentials? Sign In
+          </button>
         </div>
       )}
     </>
@@ -469,9 +515,22 @@ export const SaasOnboardingView: React.FC<{ initialMode: OnboardingMode }> = ({ 
         </div>
         <div>
           <h1 className="text-2xl font-extrabold">Create your admin password</h1>
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">Your setup link is single-use and expires 48 hours after issue.</p>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">Configure your master credentials for your organization workspace.</p>
         </div>
       </div>
+      {!accountToken && (
+        <label className="block text-sm font-semibold">
+          Setup Token or Registered Email
+          <input
+            required
+            type="text"
+            value={accountToken}
+            onChange={event => setAccountToken(event.target.value.trim())}
+            placeholder="Enter your setup token or registered corporate email"
+            className={`mt-1 w-full rounded-xl border px-3 py-2.5 text-sm outline-none ${inputStyle}`}
+          />
+        </label>
+      )}
       <label className="block text-sm font-semibold">New password
         <div className="relative mt-1">
           <input required minLength={10} maxLength={128} type={showPassword ? 'text' : 'password'} value={password}

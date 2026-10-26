@@ -27,6 +27,43 @@ reportsRouter.get('/export/pdf/trip/:id', async (req: Request, res: Response) =>
   pdfService.generateTripReceiptPdf(res, trip);
 });
 
+reportsRouter.get('/export/pdf/payment-receipt', async (req: Request, res: Response) => {
+  const { orderId, purchaseId } = req.query;
+
+  const session = await prisma.purchaseSession.findFirst({
+    where: {
+      OR: [
+        { orderId: typeof orderId === 'string' ? orderId : undefined },
+        { id: typeof purchaseId === 'string' ? purchaseId : undefined },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const plan = session?.planId
+    ? await prisma.subscriptionPlan.findUnique({ where: { id: session.planId } })
+    : null;
+
+  const receiptData = {
+    organizationName: session?.organizationName || 'TransitOps Enterprise',
+    fullName: session?.fullName || 'Organization Admin',
+    email: session?.email || 'admin@transitops.com',
+    planName: plan?.name || 'Growth Fleet',
+    amountPaise: plan?.amountPaise || 1299900,
+    orderId: session?.orderId || (typeof orderId === 'string' ? orderId : 'order_demo'),
+    paymentId: session?.paymentId || 'pay_verified_receipt',
+    date: session ? new Date(session.createdAt).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'),
+  };
+
+  const buffer = await pdfService.createPaymentReceiptBuffer(receiptData);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="transitops-tax-invoice-${receiptData.paymentId}.pdf"`
+  );
+  return res.send(buffer);
+});
+
 reportsRouter.get('/export/csv/ledger', async (_req: Request, res: Response) => {
   const expenses = await prisma.expense.findMany({ orderBy: { date: 'desc' } });
   const maintenance = await prisma.maintenanceRecord.findMany({ orderBy: { date: 'desc' } });

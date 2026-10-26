@@ -38,7 +38,8 @@ export async function seedDatabaseIfEmpty() {
 
   console.log('[TransitOps Database] Seeding SQLite database via Prisma ORM...');
 
-  const defaultPasswordHash = await bcrypt.hash('TransitOps@2026', 10);
+  const demoPassword = process.env.DEMO_ACCOUNT_PASSWORD || 'TransitOps@2026';
+  const defaultPasswordHash = await bcrypt.hash(demoPassword, 10);
 
   // 1. Seed Demo Accounts
   const demoAccounts = [

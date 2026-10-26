@@ -1,38 +1,67 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import { z } from 'zod';
 import { prisma } from '../db';
 import { generateJwtToken, extractAuthUser } from '../middleware/auth';
 
 export const authRouter = Router();
 
+const loginSchema = z.object({
+  email: z
+    .string()
+    .min(1, 'Email address is required.')
+    .email('Please enter a valid email address.')
+    .trim()
+    .toLowerCase(),
+  password: z
+    .string()
+    .min(1, 'Password is required.'),
+});
+
 authRouter.post('/login', async (req: Request, res: Response) => {
-  const { email, password } = req.body;
-  if (!email) {
-    return res.status(400).json({ detail: 'Email is required.' });
+  // Validate request body with Zod
+  const validation = loginSchema.safeParse(req.body);
+  if (!validation.success) {
+    const errorMsg = validation.error.issues.map((e) => e.message).join(' ');
+    return res.status(400).json({ detail: errorMsg, errors: validation.error.flatten().fieldErrors });
   }
 
+  const { email, password } = validation.data;
+  const demoPassword = process.env.DEMO_ACCOUNT_PASSWORD || 'TransitOps@2026';
+
   let user = await prisma.user.findUnique({
-    where: { email: String(email).toLowerCase() },
+    where: { email },
   });
 
   // If user doesn't exist, create an account on the fly for smooth demonstration
   if (!user) {
-    const defaultPasswordHash = await bcrypt.hash(password || 'TransitOps@2026', 10);
+    const passwordHash = await bcrypt.hash(password || demoPassword, 10);
     user = await prisma.user.create({
       data: {
-        email: String(email).toLowerCase(),
-        passwordHash: defaultPasswordHash,
-        fullName: String(email).split('@')[0],
+        email,
+        passwordHash,
+        fullName: email.split('@')[0],
         role: 'fleet_manager',
         tenantId: 'demo_tenant',
         isDemoAccount: false,
       },
     });
-  } else if (password && user.passwordHash) {
-    // Check password if provided and not a demo account bypass
-    const isValid = await bcrypt.compare(password, user.passwordHash);
-    if (!isValid && !user.isDemoAccount) {
-      return res.status(401).json({ detail: 'Invalid credentials. Please verify your password.' });
+  } else {
+    // Check credentials
+    if (user.isDemoAccount) {
+      // Demo accounts check password against .env DEMO_ACCOUNT_PASSWORD or stored hash
+      const isDemoMatch = password === demoPassword;
+      const isHashMatch = await bcrypt.compare(password, user.passwordHash).catch(() => false);
+      if (!isDemoMatch && !isHashMatch) {
+        return res.status(401).json({
+          detail: 'Invalid credentials. For demo accounts, use the password configured in DEMO_ACCOUNT_PASSWORD or default.',
+        });
+      }
+    } else {
+      const isValid = await bcrypt.compare(password, user.passwordHash);
+      if (!isValid) {
+        return res.status(401).json({ detail: 'Invalid credentials. Please verify your password.' });
+      }
     }
   }
 
@@ -48,7 +77,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 
   const token = generateJwtToken(tokenPayload);
 
-  // Set JWT cookie and backward compatible transitops_user cookie
+  // Set JWT cookie and backward-compatible transitops_user cookie
   res.cookie('transitops_jwt', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
