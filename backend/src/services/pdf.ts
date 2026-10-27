@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
+import { calculateVehicleRoi } from '../../../shared/vehicleRoi';
 
 // Corporate Design Tokens
 const COLORS = {
@@ -15,6 +16,20 @@ const COLORS = {
   bgZebra: '#f1f5f9',
   white: '#ffffff',
 };
+
+interface FleetRoiPdfVehicle {
+  registrationNumber: string;
+  name: string;
+  model: string;
+  type: string;
+  status: string;
+  acquisitionCost: number | null;
+  revenueGenerated: number | null;
+  maintenanceCost?: number;
+  fuelCost?: number;
+  profit?: number;
+  roiPercent?: number;
+}
 
 function drawHeaderBanner(
   doc: PDFKit.PDFDocument,
@@ -197,7 +212,7 @@ export const pdfService = {
     doc.end();
   },
 
-  generateFleetRoiPdf: (res: Response, vehicles: any[]) => {
+  generateFleetRoiPdf: (res: Response, vehicles: FleetRoiPdfVehicle[]) => {
     const doc = new PDFDocument({ margin: 40, size: 'A4' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="transitops-fleet-roi.pdf"');
@@ -210,7 +225,15 @@ export const pdfService = {
 
     const totalAcq = vehicles.reduce((sum, v) => sum + (v.acquisitionCost || 0), 0);
     const totalRev = vehicles.reduce((sum, v) => sum + (v.revenueGenerated || 0), 0);
-    const fleetAvgRoi = totalAcq > 0 ? Math.round((totalRev / totalAcq) * 100) : 0;
+    const totalProfit = vehicles.reduce((sum, v) => sum + Number(v.profit ?? calculateVehicleRoi({
+      acquisitionCost: Number(v.acquisitionCost || 0),
+      revenue: Number(v.revenueGenerated || 0),
+      maintenanceCost: Number(v.maintenanceCost || 0),
+      fuelCost: Number(v.fuelCost || 0),
+    }).profit), 0);
+    const fleetAvgRoi = totalAcq > 0 && totalRev > 0
+      ? Math.round((totalProfit / totalAcq) * 100)
+      : 0;
 
     doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLORS.slateMuted);
     doc.text('TOTAL CAPITAL INVESTMENT', 55, summaryTop + 10);
@@ -247,9 +270,14 @@ export const pdfService = {
         drawHeaderBanner(doc, 'Fleet Asset ROI Matrix', 'CAPITAL ROI', `ROI-${Date.now().toString().slice(-6)}`);
         rowY = drawTableHeader();
       }
-      const acq = Number(v.acquisitionCost || 1);
+      const acq = Number(v.acquisitionCost || 0);
       const rev = Number(v.revenueGenerated || 0);
-      const roi = Math.round((rev / acq) * 100);
+      const roi = Number(v.roiPercent ?? calculateVehicleRoi({
+        acquisitionCost: acq,
+        revenue: rev,
+        maintenanceCost: Number(v.maintenanceCost || 0),
+        fuelCost: Number(v.fuelCost || 0),
+      }).roiPercent);
 
       doc.rect(40, rowY, 515.28, 21).fill(index % 2 === 1 ? COLORS.bgZebra : COLORS.white);
 

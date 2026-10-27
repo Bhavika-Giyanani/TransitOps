@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Truck,
   CheckCircle2,
@@ -48,16 +48,8 @@ export const FleetManagerDashboard: React.FC<FleetManagerDashboardProps> = ({
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
-  const [vehicleTypeFilter, setVehicleTypeFilter] = useState('All');
-  const [vehicleStatusFilter, setVehicleStatusFilter] = useState('All');
-  const [regionFilter, setRegionFilter] = useState('All');
-  const filteredVehicles = vehicles.filter((vehicle) =>
-    (vehicleTypeFilter === 'All' || vehicle.type === vehicleTypeFilter) &&
-    (vehicleStatusFilter === 'All' || vehicle.status === vehicleStatusFilter) &&
-    (regionFilter === 'All' || vehicle.region === regionFilter)
-  );
-  const filteredVehicleIds = new Set(filteredVehicles.map((vehicle) => vehicle.id));
-  const filteredTrips = trips.filter((trip) => filteredVehicleIds.has(trip.vehicleId));
+  const filteredVehicles = vehicles;
+  const filteredTrips = trips;
   const nonRetiredVehicles = filteredVehicles.filter((vehicle) => vehicle.status !== 'Retired').length;
   const activeVehicles = filteredVehicles.filter((vehicle) => vehicle.status === 'On Trip').length;
   const today = new Date().toISOString().split('T')[0];
@@ -177,28 +169,6 @@ export const FleetManagerDashboard: React.FC<FleetManagerDashboardProps> = ({
             <span>New Dispatch</span>
           </button>
         </div>
-      </div>
-
-      <div className={`flex flex-wrap items-center gap-3 rounded-xl border p-3 ${
-        isDark ? 'bg-[#14171e] border-[#252b36]' : 'bg-white border-[#e5dfd2]'
-      }`}>
-        <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Filter fleet KPIs</span>
-        <select aria-label="Filter by vehicle type" value={vehicleTypeFilter} onChange={(event) => setVehicleTypeFilter(event.target.value)} className="rounded-lg border px-2.5 py-1.5 text-xs bg-transparent">
-          <option value="All">All types</option>
-          {[...new Set(vehicles.map((vehicle) => vehicle.type))].sort().map((type) => <option key={type} value={type}>{type}</option>)}
-        </select>
-        <select aria-label="Filter by vehicle status" value={vehicleStatusFilter} onChange={(event) => setVehicleStatusFilter(event.target.value)} className="rounded-lg border px-2.5 py-1.5 text-xs bg-transparent">
-          <option value="All">All statuses</option>
-          <option value="Available">Available</option>
-          <option value="On Trip">On Trip</option>
-          <option value="In Shop">In Shop</option>
-          <option value="Retired">Retired</option>
-        </select>
-        <select aria-label="Filter by region" value={regionFilter} onChange={(event) => setRegionFilter(event.target.value)} className="rounded-lg border px-2.5 py-1.5 text-xs bg-transparent">
-          <option value="All">All regions</option>
-          {[...new Set(vehicles.map((vehicle) => vehicle.region))].sort().map((region) => <option key={region} value={region}>{region}</option>)}
-        </select>
-        <span className="text-[10px] text-neutral-400">Driver counts are fleet-wide; driver records are not associated with vehicle regions or types.</span>
       </div>
 
       {/* KPI Cards Row (7 Operational KPIs) */}

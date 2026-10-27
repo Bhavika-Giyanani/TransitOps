@@ -31,6 +31,24 @@ export const GettingStartedGuide: React.FC<GettingStartedGuideProps> = ({
 
   if (currentUser?.role === 'safety_officer')
     return <SafetyOfficerGettingStartedGuide />;
+  if (currentUser?.role === 'driver')
+    return (
+      <RoleWelcomeGuide
+        title={`Welcome, ${currentUser.name || 'Driver'}`}
+        description="Your fleet manager assigns trips to your driver account. Draft trips are shown as awaiting dispatch; complete a trip after delivery to record its final odometer and fuel readings."
+        note={`${trips.length} trip${trips.length === 1 ? '' : 's'} currently assigned to your account.`}
+        icon={<Route className="h-5 w-5" />}
+      />
+    );
+  if (currentUser?.role === 'financial_analyst')
+    return (
+      <RoleWelcomeGuide
+        title={`Welcome, ${currentUser.name || 'Financial Analyst'}`}
+        description="Review organization-wide fleet costs, trip revenue, operating margins, and return on investment. Your reporting workspace is read-only."
+        note={`${trips.length} trip${trips.length === 1 ? '' : 's'} are available for reporting.`}
+        icon={<Building2 className="h-5 w-5" />}
+      />
+    );
 
   const hasVehicles = vehicles.length > 0;
   const hasDrivers = drivers.length > 0;
@@ -370,6 +388,33 @@ const SafetyOfficerGettingStartedGuide: React.FC = () => {
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
         Your account is scoped to your organization. Compliance actions are recorded by the API; trip dispatch and vehicle or driver creation remain with authorized operations roles.
       </p>
+    </section>
+  );
+};
+
+const RoleWelcomeGuide: React.FC<{
+  title: string;
+  description: string;
+  note: string;
+  icon: React.ReactNode;
+}> = ({ title, description, note, icon }) => {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+  return (
+    <section className={`rounded-2xl border p-6 sm:p-8 ${
+      isDark ? 'border-neutral-800 bg-neutral-900/90' : 'border-neutral-200 bg-white'
+    }`}>
+      <div className="flex items-center gap-3">
+        <div className={`rounded-xl p-3 ${isDark ? 'bg-[#ccff00]/10 text-[#ccff00]' : 'bg-amber-100 text-amber-800'}`}>
+          {icon}
+        </div>
+        <div>
+          <div className="text-xs font-bold uppercase tracking-wider text-emerald-500">Workspace ready</div>
+          <h2 className="mt-1 text-xl font-extrabold tracking-tight">{title}</h2>
+        </div>
+      </div>
+      <p className="mt-4 max-w-3xl text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">{description}</p>
+      <p className="mt-4 text-xs font-semibold text-neutral-400">{note}</p>
     </section>
   );
 };

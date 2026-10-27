@@ -4,13 +4,29 @@ import { api } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 import { useTheme } from '../../context/ThemeContext';
 import { INDIAN_LICENSE_CATEGORIES, OrganizationUser, UserRole } from '../../types';
-import { licenceExpiryError, LICENCE_HINT, normalizeLicence } from '../../utils/indianFormats';
+import {
+  INDIAN_PHONE_HINT,
+  licenceExpiryError,
+  LICENCE_HINT,
+  normalizeIndianPhoneNumber,
+  normalizeLicence,
+} from '../../utils/indianFormats';
 
 /** Normalized licence number, or an error message for the form. */
-const checkDriverLicence = (licenseNumber: string, licenseExpiryDate: string): { licence: string; error: string | null } => {
+const checkDriverLicence = (
+  licenseNumber: string,
+  licenseExpiryDate: string,
+  contactNumber: string,
+): { licence: string; phone: string; error: string | null } => {
   const licence = normalizeLicence(licenseNumber);
-  if (!licence.ok) return { licence: '', error: licence.error };
-  return { licence: licence.value, error: licenceExpiryError(licence.value, licenseExpiryDate) };
+  if (!licence.ok) return { licence: '', phone: '', error: licence.error };
+  const phone = normalizeIndianPhoneNumber(contactNumber);
+  if (!phone.ok) return { licence: '', phone: '', error: phone.error };
+  return {
+    licence: licence.value,
+    phone: phone.value,
+    error: licenceExpiryError(licence.value, licenseExpiryDate),
+  };
 };
 
 type AssignableRole = Exclude<UserRole, 'organization_admin'>;
@@ -69,7 +85,7 @@ export const OrganizationAdminDashboard: React.FC = () => {
 
   const createUser = async (event: React.FormEvent) => {
     event.preventDefault();
-    const driverCheck = role === 'driver' ? checkDriverLicence(licenseNumber, licenseExpiryDate) : null;
+    const driverCheck = role === 'driver' ? checkDriverLicence(licenseNumber, licenseExpiryDate, contactNumber) : null;
     if (driverCheck?.error) {
       setError(driverCheck.error);
       return;
@@ -83,7 +99,7 @@ export const OrganizationAdminDashboard: React.FC = () => {
         password,
         role,
         ...(driverCheck
-          ? { contactNumber, licenseNumber: driverCheck.licence, licenseCategory, licenseExpiryDate }
+          ? { contactNumber: driverCheck.phone, licenseNumber: driverCheck.licence, licenseCategory, licenseExpiryDate }
           : {}),
       });
       setFullName('');
@@ -105,7 +121,7 @@ export const OrganizationAdminDashboard: React.FC = () => {
     event.preventDefault();
     if (!editDraft) return;
     const driverCheck = editDraft.role === 'driver'
-      ? checkDriverLicence(editDraft.licenseNumber, editDraft.licenseExpiryDate)
+      ? checkDriverLicence(editDraft.licenseNumber, editDraft.licenseExpiryDate, editDraft.contactNumber)
       : null;
     if (driverCheck?.error) {
       setError(driverCheck.error);
@@ -120,7 +136,7 @@ export const OrganizationAdminDashboard: React.FC = () => {
         role: editDraft.role,
         ...(driverCheck
           ? {
-              contactNumber: editDraft.contactNumber,
+              contactNumber: driverCheck.phone,
               licenseNumber: driverCheck.licence,
               licenseCategory: editDraft.licenseCategory,
               licenseExpiryDate: editDraft.licenseExpiryDate,
@@ -157,12 +173,15 @@ export const OrganizationAdminDashboard: React.FC = () => {
 
   const startEditing = (user: OrganizationUser) => {
     if (user.role === 'organization_admin') return;
+    const phoneDigits = user.contactNumber?.replace(/\D/g, '') ?? '';
     setEditDraft({
       id: user.id,
       fullName: user.fullName,
       email: user.email,
       role: user.role,
-      contactNumber: user.contactNumber ?? '',
+      contactNumber: phoneDigits.length === 12 && phoneDigits.startsWith('91')
+        ? phoneDigits.slice(2)
+        : phoneDigits,
       licenseNumber: user.licenseNumber ?? '',
       licenseCategory: user.licenseCategory ?? '',
       licenseExpiryDate: user.licenseExpiryDate ?? '',
@@ -240,8 +259,8 @@ export const OrganizationAdminDashboard: React.FC = () => {
           {role === 'driver' && (
             <>
               <label className="space-y-1 text-xs font-semibold">
-                Contact number
-                <input className={fieldClass} required maxLength={32} value={contactNumber} onChange={(event) => { setError(null); setContactNumber(event.target.value); }} />
+                Mobile number (+91)
+                <input className={fieldClass} type="tel" required inputMode="numeric" maxLength={10} pattern="[6-9][0-9]{9}" title={INDIAN_PHONE_HINT} placeholder="9876543210" value={contactNumber} onChange={(event) => { setError(null); setContactNumber(event.target.value.replace(/\D/g, '').slice(0, 10)); }} />
               </label>
               <label className="space-y-1 text-xs font-semibold">
                 License number
@@ -408,13 +427,18 @@ export const OrganizationAdminDashboard: React.FC = () => {
               {editDraft.role === 'driver' && (
                 <>
                   <label className="space-y-1 text-xs font-semibold">
-                    Contact number
+                    Mobile number (+91)
                     <input
                       className={fieldClass}
+                      type="tel"
                       required
-                      maxLength={32}
+                      inputMode="numeric"
+                      maxLength={10}
+                      pattern="[6-9][0-9]{9}"
+                      title={INDIAN_PHONE_HINT}
+                      placeholder="9876543210"
                       value={editDraft.contactNumber}
-                      onChange={event => setEditDraft({ ...editDraft, contactNumber: event.target.value })}
+                      onChange={event => setEditDraft({ ...editDraft, contactNumber: event.target.value.replace(/\D/g, '').slice(0, 10) })}
                     />
                   </label>
                   <label className="space-y-1 text-xs font-semibold">

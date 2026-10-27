@@ -3,7 +3,13 @@ import { X, UserPlus, AlertCircle } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useTheme } from '../../context/ThemeContext';
 import { INDIAN_LICENSE_CATEGORIES } from '../../types';
-import { licenceExpiryError, LICENCE_HINT, normalizeLicence } from '../../utils/indianFormats';
+import {
+  INDIAN_PHONE_HINT,
+  licenceExpiryError,
+  LICENCE_HINT,
+  normalizeIndianPhoneNumber,
+  normalizeLicence,
+} from '../../utils/indianFormats';
 
 interface AddDriverModalProps {
   isOpen: boolean;
@@ -19,8 +25,11 @@ export const AddDriverModal: React.FC<AddDriverModalProps> = ({ isOpen, onClose 
   const [licenseNumber, setLicenseNumber] = useState('');
   const [licenseCategory, setLicenseCategory] = useState<string>('HGMV');
   const [licenseExpiryDate, setLicenseExpiryDate] = useState('2028-06-30');
-  const [contactNumber, setContactNumber] = useState('+91 98');
+  const [contactNumber, setContactNumber] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -38,26 +47,37 @@ export const AddDriverModal: React.FC<AddDriverModalProps> = ({ isOpen, onClose 
       setError(expiryError);
       return;
     }
+    const phone = normalizeIndianPhoneNumber(contactNumber);
+    if (!phone.ok) {
+      setError(phone.error);
+      return;
+    }
+    if (password.length < 10) {
+      setError('Initial password must contain at least 10 characters.');
+      return;
+    }
 
-    const generatedEmail =
-      `${name.toLowerCase().replace(/\s+/g, '.')}@transitops.com`;
+    setIsSubmitting(true);
+    try {
+      const res = await addDriver({
+        name: name.trim(),
+        licenseNumber: licence.value,
+        licenseCategory,
+        licenseExpiryDate,
+        contactNumber: phone.value,
+        safetyScore: 100,
+        status: licenseExpiryDate < new Date().toISOString().slice(0, 10) ? 'Suspended' : 'Available',
+        email: email.trim().toLowerCase(),
+        password,
+      });
 
-    const res = await addDriver({
-      name: name.trim(),
-      licenseNumber: licence.value,
-      licenseCategory,
-      licenseExpiryDate,
-      contactNumber: contactNumber.trim(),
-      // New drivers start Available; the API calculates the safety score.
-      safetyScore: 100,
-      status: 'Available',
-      email: generatedEmail,
-    });
-
-    if (res.success) {
-      onClose();
-    } else {
-      setError(res.error || 'Failed to add driver');
+      if (res.success) {
+        onClose();
+      } else {
+        setError(res.error || 'Failed to add driver');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -194,14 +214,58 @@ export const AddDriverModal: React.FC<AddDriverModalProps> = ({ isOpen, onClose 
           <div>
             <div>
               <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-1">
-                Contact Number
+                Mobile Number (+91)
               </label>
               <input
-                type="text"
+                type="tel"
                 required
-                placeholder="+91 98200 00000"
+                inputMode="numeric"
+                maxLength={10}
+                pattern="[6-9][0-9]{9}"
+                title={INDIAN_PHONE_HINT}
+                placeholder="9876543210"
                 value={contactNumber}
-                onChange={(e) => { setError(null); setContactNumber(e.target.value); }}
+                onChange={(e) => { setError(null); setContactNumber(e.target.value.replace(/\D/g, '').slice(0, 10)); }}
+                className={`w-full px-3 py-2 text-xs rounded-xl border outline-none ${
+                  isDark
+                    ? 'bg-[#191d26] border-[#272e3d] focus:border-[#ccff00]'
+                    : 'bg-neutral-50 border-[#ded7ca] focus:border-[#d97706]'
+                }`}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-1">
+                Driver Login Email *
+              </label>
+              <input
+                type="email"
+                required
+                maxLength={256}
+                placeholder="driver@example.com"
+                value={email}
+                onChange={(e) => { setError(null); setEmail(e.target.value); }}
+                className={`w-full px-3 py-2 text-xs rounded-xl border outline-none ${
+                  isDark
+                    ? 'bg-[#191d26] border-[#272e3d] focus:border-[#ccff00]'
+                    : 'bg-neutral-50 border-[#ded7ca] focus:border-[#d97706]'
+                }`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-1">
+                Initial Password *
+              </label>
+              <input
+                type="password"
+                required
+                minLength={10}
+                autoComplete="new-password"
+                placeholder="At least 10 characters"
+                value={password}
+                onChange={(e) => { setError(null); setPassword(e.target.value); }}
                 className={`w-full px-3 py-2 text-xs rounded-xl border outline-none ${
                   isDark
                     ? 'bg-[#191d26] border-[#272e3d] focus:border-[#ccff00]'
@@ -214,21 +278,23 @@ export const AddDriverModal: React.FC<AddDriverModalProps> = ({ isOpen, onClose 
           <div className="flex items-center justify-end gap-3 pt-3">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-400 hover:text-neutral-200"
+              className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-400 hover:text-neutral-200 disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
+              disabled={isSubmitting}
               className={`px-5 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all flex items-center gap-2 ${
                 isDark
-                  ? 'bg-[#ccff00] text-black hover:bg-[#b8e600]'
-                  : 'bg-[#d97706] text-white hover:bg-[#b45309]'
+                  ? 'bg-[#ccff00] text-black hover:bg-[#b8e600] disabled:opacity-50'
+                  : 'bg-[#d97706] text-white hover:bg-[#b45309] disabled:opacity-50'
               }`}
             >
               <UserPlus className="w-4 h-4" />
-              <span>Save Driver Profile</span>
+              <span>{isSubmitting ? 'Creating account…' : 'Save Driver Profile'}</span>
             </button>
           </div>
         </form>

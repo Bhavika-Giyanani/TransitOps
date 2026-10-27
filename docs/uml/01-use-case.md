@@ -1,12 +1,12 @@
 # 1. Use Case Diagrams
 
-One diagram per actor, taken from the `[Authorize(Roles = ...)]` attributes on the API controllers and the role
-dashboards in the frontend. Every operational actor also signs in and out and receives live SignalR updates;
+One diagram per actor, based on the `requireRole(...)` checks in Express routers and the role
+dashboards in the frontend. Every operational actor also signs in and out and receives live Socket.IO updates;
 those common use cases are shown once, in 1.0.
 There is **no separate Dispatcher role**: creating, dispatching and cancelling trips is a Fleet Manager action.
 
 Notation: `«include»` means the use case always performs the included one; `«extend»` means it happens only
-in some cases. System actors (Razorpay, Gmail SMTP, Hangfire scheduler) are shown on the right.
+in some cases. System actors (Razorpay, SMTP provider, node-cron scheduler) are shown on the right.
 
 ## 1.0 Common to every signed-in user
 
@@ -18,7 +18,7 @@ flowchart LR
         C1(["Sign in with email and password"])
         C2(["Sign out"])
         C3(["Switch light / dark theme"])
-        C4(["Receive live updates (SignalR)"])
+        C4(["Receive live updates (Socket.IO)"])
         C5(["See only own organization's data"])
     end
     U --- C1 & C2 & C3 & C4
@@ -30,7 +30,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     FM(["👤 Fleet Manager"])
-    SMTP(["⚙️ Gmail SMTP"])
+    SMTP(["⚙️ SMTP provider"])
 
     subgraph SYS["TransitOps"]
         direction TB
@@ -42,7 +42,7 @@ flowchart LR
         F5(["Open maintenance work order"])
         F6(["Close maintenance work order"])
         F7(["Add driver"])
-        F7a(["Validate Sarathi licence,<br/>class and expiry"])
+        F7a(["Validate licence format<br/>and expiry date"])
         F8(["Edit driver / suspend / reinstate"])
         F9(["Record safety incident"])
         F10(["View safety-score breakdown"])
@@ -80,7 +80,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     DR(["👤 Driver"])
-    SMTP(["⚙️ Gmail SMTP"])
+    SMTP(["⚙️ SMTP provider"])
 
     subgraph SYS["TransitOps"]
         direction TB
@@ -108,8 +108,8 @@ linked driver profile on every trip request.
 ```mermaid
 flowchart LR
     SO(["👤 Safety Officer"])
-    SMTP(["⚙️ Gmail SMTP"])
-    HF(["⏱️ Hangfire scheduler"])
+    SMTP(["⚙️ SMTP provider"])
+    HF(["⏱️ node-cron scheduler"])
 
     subgraph SYS["TransitOps"]
         direction TB
@@ -125,7 +125,7 @@ flowchart LR
         S9(["View maintenance records"])
         S10(["View vehicles<br/>(no cost or revenue figures)"])
         S11(["Recalculate safety scores"])
-        S12(["Auto-suspend expired licences (daily)"])
+        S12(["Auto-suspend expired licences (hourly)"])
     end
 
     SO --- S1 & S2 & S3 & S4 & S5 & S6 & S7 & S8 & S9 & S10
@@ -168,7 +168,7 @@ organization's user accounts. They do not run day-to-day fleet operations.
 flowchart LR
     OA(["👤 Organization Admin<br/>(purchaser before setup)"])
     RZP(["⚙️ Razorpay"])
-    SMTP(["⚙️ Gmail SMTP"])
+    SMTP(["⚙️ SMTP provider"])
 
     subgraph BUY["TransitOps – purchase and onboarding (public)"]
         direction TB

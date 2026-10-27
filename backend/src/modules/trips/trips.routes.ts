@@ -1,27 +1,65 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import { prisma } from '../../db';
 import { calculateDriverSafetyScore } from '../../services/safetyScore';
 import { realtimeEmitter } from '../../realtime';
-import { requireAuth } from '../../middleware/auth';
+import { requireAuth, requireRole } from '../../middleware/auth';
+import { getIndianDateString } from '../../utils/indianDate';
+import { findDriverForUser } from '../drivers/driverIdentity';
 
 export const tripsRouter = Router();
 tripsRouter.use(requireAuth);
 
+const createTripSchema = z.object({
+  source: z.string().trim().min(1).max(200),
+  destination: z.string().trim().min(1).max(200),
+  vehicleId: z.string().trim().min(1),
+  driverId: z.string().trim().min(1),
+  cargoWeightKg: z.coerce.number().finite().positive(),
+  plannedDistanceKm: z.coerce.number().finite().positive(),
+  revenue: z.coerce.number().finite().nonnegative().optional(),
+});
+
+const completeTripSchema = z.object({
+  finalOdometerKm: z.coerce.number().finite().nonnegative(),
+  fuelConsumedLiters: z.coerce.number().finite().nonnegative(),
+});
+
 tripsRouter.get('/', async (req: Request, res: Response) => {
+  const where: { tenantId: string; driverId?: string } = { tenantId: req.user!.tenantId };
+  if (req.user!.role === 'driver') {
+    const driver = await findDriverForUser(req.user!.id, req.user!.tenantId);
+    if (!driver) return res.json([]);
+    where.driverId = driver.id;
+  }
   const trips = await prisma.trip.findMany({
-    where: { tenantId: req.user!.tenantId },
+    where,
     orderBy: { createdAt: 'desc' },
   });
   return res.json(trips);
 });
 
-tripsRouter.post('/', async (req: Request, res: Response) => {
-  const data = req.body;
+tripsRouter.post('/', requireRole('fleet_manager'), async (req: Request, res: Response) => {
+  const validation = createTripSchema.safeParse(req.body);
+  if (!validation.success) {
+    return res.status(400).json({ detail: validation.error.issues.map((issue) => issue.message).join(' ') });
+  }
+  const data = validation.data;
   const tenantId = req.user!.tenantId;
   const vehicle = await prisma.vehicle.findFirst({ where: { id: data.vehicleId, tenantId } });
   const driver = await prisma.driver.findFirst({ where: { id: data.driverId, tenantId } });
   if (!vehicle) return res.status(404).json({ detail: 'Select a vehicle in your organization.' });
   if (!driver) return res.status(404).json({ detail: 'Select a driver in your organization.' });
+  if (vehicle.status !== 'Available') return res.status(400).json({ detail: 'Only available vehicles can be assigned to a trip.' });
+  if (data.cargoWeightKg > vehicle.maxCapacityKg) {
+    return res.status(400).json({ detail: `Cargo weight exceeds the selected vehicle's ${vehicle.maxCapacityKg} kg capacity.` });
+  }
+  if (!['Available', 'On Duty'].includes(driver.status)) return res.status(400).json({ detail: 'Only available drivers can be assigned to a trip.' });
+  if (driver.licenseExpiryDate < getIndianDateString()) {
+    await prisma.driver.update({ where: { id: driver.id }, data: { status: 'Suspended' } });
+    realtimeEmitter.driverStatus(driver.id, 'Suspended', tenantId);
+    return res.status(400).json({ detail: 'The driver has an expired licence and has been suspended.' });
+  }
 
   const newTrip = await prisma.trip.create({
     data: {
@@ -34,9 +72,9 @@ tripsRouter.post('/', async (req: Request, res: Response) => {
       vehicleName: vehicle.name,
       driverId: data.driverId,
       driverName: driver.name,
-      cargoWeightKg: Number(data.cargoWeightKg) || 1000,
-      plannedDistanceKm: Number(data.plannedDistanceKm) || 250,
-      revenue: Number(data.revenue) || 25000,
+      cargoWeightKg: data.cargoWeightKg,
+      plannedDistanceKm: data.plannedDistanceKm,
+      revenue: data.revenue ?? 0,
       status: 'Draft',
     },
   });
@@ -44,11 +82,12 @@ tripsRouter.post('/', async (req: Request, res: Response) => {
   return res.status(201).json(newTrip);
 });
 
-tripsRouter.post('/:id/dispatch', async (req: Request, res: Response) => {
+tripsRouter.post('/:id/dispatch', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const tenantId = req.user!.tenantId;
   const trip = await prisma.trip.findFirst({ where: { id, tenantId } });
   if (!trip) return res.status(404).json({ detail: 'Trip not found' });
+  if (trip.status !== 'Draft') return res.status(400).json({ detail: 'Only draft trips can be dispatched.' });
 
   const vehicle = await prisma.vehicle.findFirst({ where: { id: trip.vehicleId, tenantId } });
   const driver = await prisma.driver.findFirst({ where: { id: trip.driverId, tenantId } });
@@ -58,6 +97,16 @@ tripsRouter.post('/:id/dispatch', async (req: Request, res: Response) => {
   }
   if (driver && driver.status === 'Suspended') {
     return res.status(400).json({ detail: 'Driver is currently Suspended and cannot be dispatched.' });
+  }
+  if (!driver || driver.licenseExpiryDate < getIndianDateString()) {
+    if (driver) {
+      await prisma.driver.update({ where: { id: driver.id }, data: { status: 'Suspended' } });
+      realtimeEmitter.driverStatus(driver.id, 'Suspended', tenantId);
+    }
+    return res.status(400).json({ detail: 'The assigned driver has no valid current licence and cannot be dispatched.' });
+  }
+  if (!vehicle || vehicle.status !== 'Available') {
+    return res.status(400).json({ detail: 'The assigned vehicle is not available for dispatch.' });
   }
 
   const updatedTrip = await prisma.trip.update({
@@ -88,41 +137,54 @@ tripsRouter.post('/:id/dispatch', async (req: Request, res: Response) => {
   realtimeEmitter.notification({
     type: 'success',
     title: 'Trip Dispatched',
-    message: `${updatedTrip.tripCode}: ${updatedTrip.source} -> ${updatedTrip.destination} is now in transit.`,
+    message: 'A fleet trip has been dispatched.',
     tenantId,
   });
 
   return res.json(updatedTrip);
 });
 
-tripsRouter.post('/:id/complete', async (req: Request, res: Response) => {
+tripsRouter.post('/:id/complete', requireRole('fleet_manager', 'driver'), async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { finalOdometerKm, fuelConsumedLiters } = req.body;
+  const validation = completeTripSchema.safeParse(req.body);
+  if (!validation.success) {
+    return res.status(400).json({ detail: validation.error.issues.map((issue) => issue.message).join(' ') });
+  }
+  const { finalOdometerKm, fuelConsumedLiters } = validation.data;
 
   const tenantId = req.user!.tenantId;
   const trip = await prisma.trip.findFirst({ where: { id, tenantId } });
   if (!trip) return res.status(404).json({ detail: 'Trip not found' });
+  if (req.user!.role === 'driver') {
+    const driver = await findDriverForUser(req.user!.id, req.user!.tenantId);
+    if (!driver || trip.driverId !== driver.id) return res.status(403).json({ detail: 'You can only complete trips assigned to your driver account.' });
+    if (trip.status !== 'Dispatched') return res.status(400).json({ detail: 'Only your dispatched trips can be completed.' });
+  } else if (trip.status !== 'Dispatched') {
+    return res.status(400).json({ detail: 'Only dispatched trips can be completed.' });
+  }
 
-  const finalOdo = Number(finalOdometerKm) || trip.plannedDistanceKm + 100000;
-  const fuel = Number(fuelConsumedLiters) || Math.round(trip.plannedDistanceKm / 6);
+  const vehicle = await prisma.vehicle.findFirst({ where: { id: trip.vehicleId, tenantId } });
+  if (!vehicle) return res.status(404).json({ detail: 'Assigned vehicle not found.' });
+  if (finalOdometerKm < vehicle.currentOdometerKm) {
+    return res.status(400).json({ detail: 'Final odometer cannot be lower than the vehicle starting odometer.' });
+  }
 
   const updatedTrip = await prisma.trip.update({
     where: { id, tenantId },
     data: {
       status: 'Completed',
       completedAt: new Date(),
-      finalOdometerKm: finalOdo,
-      fuelConsumedLiters: fuel,
+      finalOdometerKm,
+      fuelConsumedLiters,
     },
   });
 
-  const vehicle = await prisma.vehicle.findFirst({ where: { id: trip.vehicleId, tenantId } });
   if (vehicle) {
     await prisma.vehicle.update({
       where: { id: vehicle.id, tenantId },
       data: {
         status: 'Available',
-        currentOdometerKm: finalOdo,
+        currentOdometerKm: finalOdometerKm,
         revenueGenerated: { increment: trip.revenue || 0 },
       },
     });
@@ -147,18 +209,21 @@ tripsRouter.post('/:id/complete', async (req: Request, res: Response) => {
   realtimeEmitter.notification({
     type: 'success',
     title: 'Trip Completed',
-    message: `${updatedTrip.tripCode} completed successfully. Fuel and odometer readings logged.`,
+    message: 'A fleet trip has been completed and its delivery readings were recorded.',
     tenantId,
   });
 
   return res.json(updatedTrip);
 });
 
-tripsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
+tripsRouter.post('/:id/cancel', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const tenantId = req.user!.tenantId;
   const trip = await prisma.trip.findFirst({ where: { id, tenantId } });
   if (!trip) return res.status(404).json({ detail: 'Trip not found' });
+  if (!['Draft', 'Dispatched'].includes(trip.status)) {
+    return res.status(400).json({ detail: 'Only draft or dispatched trips can be cancelled.' });
+  }
 
   const updatedTrip = await prisma.trip.update({
     where: { id, tenantId },

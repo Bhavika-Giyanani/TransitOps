@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../db';
 import { realtimeEmitter } from '../../realtime';
-import { requireAuth } from '../../middleware/auth';
+import { requireAuth, requireRole } from '../../middleware/auth';
+import { normalizeRegistration } from '../../../../shared/indianFormats';
 
 export const vehiclesRouter = Router();
 vehiclesRouter.use(requireAuth);
@@ -21,7 +22,7 @@ function formatVehicle(v: any) {
   };
 }
 
-vehiclesRouter.get('/', async (req: Request, res: Response) => {
+vehiclesRouter.get('/', requireRole('fleet_manager', 'driver', 'safety_officer', 'financial_analyst'), async (req: Request, res: Response) => {
   const vehicles = await prisma.vehicle.findMany({
     where: { tenantId: req.user!.tenantId },
     orderBy: { createdAt: 'desc' },
@@ -29,12 +30,19 @@ vehiclesRouter.get('/', async (req: Request, res: Response) => {
   return res.json(vehicles.map(formatVehicle));
 });
 
-vehiclesRouter.post('/', async (req: Request, res: Response) => {
+vehiclesRouter.post('/', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const data = req.body;
+  const registration = normalizeRegistration(typeof data.registrationNumber === 'string' ? data.registrationNumber : '');
+  if (!registration.ok) return res.status(400).json({ detail: registration.error });
+  const duplicate = await prisma.vehicle.findFirst({
+    where: { tenantId: req.user!.tenantId, registrationNumber: registration.value },
+    select: { id: true },
+  });
+  if (duplicate) return res.status(409).json({ detail: 'That vehicle registration is already recorded in this organization.' });
   const newVehicle = await prisma.vehicle.create({
     data: {
       tenantId: req.user!.tenantId,
-      registrationNumber: data.registrationNumber || `MH-${Math.floor(10 + Math.random() * 89)}-XX-1234`,
+      registrationNumber: registration.value,
       name: data.name || 'New Fleet Asset',
       model: data.model || 'Commercial Transport',
       type: data.type || 'Truck',
@@ -53,13 +61,28 @@ vehiclesRouter.post('/', async (req: Request, res: Response) => {
   return res.status(201).json(formatVehicle(newVehicle));
 });
 
-vehiclesRouter.put('/:id', async (req: Request, res: Response) => {
+vehiclesRouter.put('/:id', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const data = req.body;
 
   const updateData: any = { ...data };
   delete updateData.tenantId;
   delete updateData.id;
+  if (data.registrationNumber !== undefined) {
+    if (typeof data.registrationNumber !== 'string') return res.status(400).json({ detail: 'Enter a valid Indian vehicle registration number.' });
+    const registration = normalizeRegistration(data.registrationNumber);
+    if (!registration.ok) return res.status(400).json({ detail: registration.error });
+    const duplicate = await prisma.vehicle.findFirst({
+      where: {
+        tenantId: req.user!.tenantId,
+        registrationNumber: registration.value,
+        NOT: { id },
+      },
+      select: { id: true },
+    });
+    if (duplicate) return res.status(409).json({ detail: 'That vehicle registration is already recorded in this organization.' });
+    updateData.registrationNumber = registration.value;
+  }
   if (data.documents) {
     updateData.documents = typeof data.documents === 'string' ? data.documents : JSON.stringify(data.documents);
   }
@@ -80,7 +103,7 @@ vehiclesRouter.put('/:id', async (req: Request, res: Response) => {
   return res.json(formatVehicle(updated));
 });
 
-vehiclesRouter.put('/:id/status', async (req: Request, res: Response) => {
+vehiclesRouter.put('/:id/status', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
 
@@ -96,7 +119,7 @@ vehiclesRouter.put('/:id/status', async (req: Request, res: Response) => {
   return res.json(formatVehicle(updated));
 });
 
-vehiclesRouter.delete('/:id', async (req: Request, res: Response) => {
+vehiclesRouter.delete('/:id', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const result = await prisma.vehicle.updateMany({
     where: { id, tenantId: req.user!.tenantId },

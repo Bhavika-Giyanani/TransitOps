@@ -4,6 +4,12 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db';
 import { requireAuth, requireRole } from '../../middleware/auth';
+import {
+  licenceExpiryError,
+  normalizeIndianPhoneNumber,
+  normalizeLicence,
+} from '../../../../shared/indianFormats';
+import { getIndianDateString } from '../../utils/indianDate';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole('organization_admin'));
@@ -44,8 +50,8 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
   };
   const emailValidation = z.string().trim().email().safeParse(data.email);
   if (!emailValidation.success || typeof data.fullName !== 'string' || data.fullName.trim().length < 2 ||
-    typeof data.password !== 'string' || data.password.length < 8) {
-    return res.status(400).json({ detail: 'A name, email, and password of at least 8 characters are required.' });
+    typeof data.password !== 'string' || data.password.length < 10) {
+    return res.status(400).json({ detail: 'A name, email, and password of at least 10 characters are required.' });
   }
   const email = emailValidation.data.toLowerCase();
   const existingEmail = await prisma.user.findFirst({
@@ -59,21 +65,67 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
   if (!role) {
     return res.status(400).json({ detail: 'Choose a valid organization role.' });
   }
-  const passwordHash = await bcrypt.hash(data.password, 10);
 
-  const newUser = await prisma.user.create({
-    data: {
-      tenantId: req.user!.tenantId,
-      email,
-      fullName: data.fullName.trim(),
-      passwordHash,
-      role,
-      isDemoAccount: false,
-      contactNumber: data.contactNumber,
-      licenseNumber: data.licenseNumber,
-      licenseCategory: data.licenseCategory,
+  let driverDetails: {
+    contactNumber: string;
+    licenseNumber: string;
+    licenseCategory: string;
+    licenseExpiryDate: string;
+  } | undefined;
+  if (role === 'driver') {
+    if (typeof data.contactNumber !== 'string' || typeof data.licenseNumber !== 'string' ||
+      typeof data.licenseCategory !== 'string' || typeof data.licenseExpiryDate !== 'string') {
+      return res.status(400).json({ detail: 'Driver accounts require a mobile number, licence number, category, and expiry date.' });
+    }
+    const phone = normalizeIndianPhoneNumber(data.contactNumber);
+    if (!phone.ok) return res.status(400).json({ detail: phone.error });
+    const licence = normalizeLicence(data.licenseNumber);
+    if (!licence.ok) return res.status(400).json({ detail: licence.error });
+    if (!data.licenseCategory.trim()) return res.status(400).json({ detail: 'Select a licence category.' });
+    const expiryError = licenceExpiryError(licence.value, data.licenseExpiryDate);
+    if (expiryError) return res.status(400).json({ detail: expiryError });
+    const duplicateLicence = await prisma.driver.findFirst({
+      where: { tenantId: req.user!.tenantId, licenseNumber: licence.value },
+      select: { id: true },
+    });
+    if (duplicateLicence) return res.status(409).json({ detail: 'That driving licence is already registered in this organization.' });
+    driverDetails = {
+      contactNumber: phone.value,
+      licenseNumber: licence.value,
+      licenseCategory: data.licenseCategory.trim(),
       licenseExpiryDate: data.licenseExpiryDate,
-    },
+    };
+  }
+
+  const passwordHash = await bcrypt.hash(data.password, 10);
+  const newUser = await prisma.$transaction(async (transaction) => {
+    const user = await transaction.user.create({
+      data: {
+        tenantId: req.user!.tenantId,
+        email,
+        fullName: data.fullName.trim(),
+        passwordHash,
+        role,
+        isDemoAccount: false,
+        ...(driverDetails ? driverDetails : {}),
+      },
+    });
+    if (driverDetails) {
+      const expired = driverDetails.licenseExpiryDate < getIndianDateString();
+      const driver = await transaction.driver.create({
+        data: {
+          tenantId: req.user!.tenantId,
+          name: user.fullName,
+          email: user.email,
+          ...driverDetails,
+          safetyScore: 100,
+          status: expired ? 'Suspended' : 'Available',
+          identityUserId: user.id,
+        },
+      });
+      return transaction.user.update({ where: { id: user.id }, data: { driverId: driver.id } });
+    }
+    return user;
   });
 
   return res.status(201).json({
@@ -95,6 +147,10 @@ adminRouter.post('/users', async (req: Request, res: Response) => {
 adminRouter.put('/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   const data = req.body;
+  const targetUser = await prisma.user.findFirst({
+    where: { id, tenantId: req.user!.tenantId, role: { not: 'organization_admin' } },
+  });
+  if (!targetUser) return res.status(404).json({ detail: 'Organization user not found.' });
   const roleMap: Record<string, string> = {
     FleetManager: 'fleet_manager',
     Driver: 'driver',
@@ -121,8 +177,8 @@ adminRouter.put('/users/:id', async (req: Request, res: Response) => {
   if (existingEmail && existingEmail.id !== id) {
     return res.status(409).json({ detail: 'That email address is already registered to another account.' });
   }
-  if (data.password !== undefined && (typeof data.password !== 'string' || data.password.length < 8)) {
-    return res.status(400).json({ detail: 'Password must contain at least 8 characters.' });
+  if (data.password !== undefined && (typeof data.password !== 'string' || data.password.length < 10)) {
+    return res.status(400).json({ detail: 'Password must contain at least 10 characters.' });
   }
 
   const updateData: Prisma.UserUpdateManyMutationInput = {
@@ -139,27 +195,82 @@ adminRouter.put('/users/:id', async (req: Request, res: Response) => {
     updateData.passwordHash = await bcrypt.hash(data.password, 10);
   }
 
-  const updated = await prisma.$transaction(async (transaction) => {
-    const result = await transaction.user.updateMany({
-      where: { id, tenantId: req.user!.tenantId, role: { not: 'organization_admin' } },
-      data: updateData,
+  let driverDetails: {
+    contactNumber: string;
+    licenseNumber: string;
+    licenseCategory: string;
+    licenseExpiryDate: string;
+  } | undefined;
+  if ((role ?? targetUser.role) === 'driver') {
+    if (typeof data.contactNumber !== 'string' || typeof data.licenseNumber !== 'string' ||
+      typeof data.licenseCategory !== 'string' || typeof data.licenseExpiryDate !== 'string') {
+      return res.status(400).json({ detail: 'Driver accounts require a mobile number, licence number, category, and expiry date.' });
+    }
+    const phone = normalizeIndianPhoneNumber(data.contactNumber);
+    if (!phone.ok) return res.status(400).json({ detail: phone.error });
+    const licence = normalizeLicence(data.licenseNumber);
+    if (!licence.ok) return res.status(400).json({ detail: licence.error });
+    if (!data.licenseCategory.trim()) return res.status(400).json({ detail: 'Select a licence category.' });
+    const expiryError = licenceExpiryError(licence.value, data.licenseExpiryDate);
+    if (expiryError) return res.status(400).json({ detail: expiryError });
+    const duplicateLicence = await prisma.driver.findFirst({
+      where: { tenantId: req.user!.tenantId, licenseNumber: licence.value, NOT: { identityUserId: id } },
+      select: { id: true },
     });
-    if (result.count === 0) return result;
+    if (duplicateLicence) return res.status(409).json({ detail: 'That driving licence is already registered in this organization.' });
+    driverDetails = {
+      contactNumber: phone.value,
+      licenseNumber: licence.value,
+      licenseCategory: data.licenseCategory.trim(),
+      licenseExpiryDate: data.licenseExpiryDate,
+    };
+    updateData.contactNumber = driverDetails.contactNumber;
+    updateData.licenseNumber = driverDetails.licenseNumber;
+    updateData.licenseCategory = driverDetails.licenseCategory;
+    updateData.licenseExpiryDate = driverDetails.licenseExpiryDate;
+  }
 
-    await transaction.driver.updateMany({
-      where: { tenantId: req.user!.tenantId, identityUserId: id },
-      data: {
-        email,
-        name: updateData.fullName,
-        contactNumber: typeof data.contactNumber === 'string' ? data.contactNumber : undefined,
-        licenseNumber: typeof data.licenseNumber === 'string' ? data.licenseNumber : undefined,
-        licenseCategory: typeof data.licenseCategory === 'string' ? data.licenseCategory : undefined,
-        licenseExpiryDate: typeof data.licenseExpiryDate === 'string' ? data.licenseExpiryDate : undefined,
-      },
+  const updated = await prisma.$transaction(async (transaction) => {
+    const existingUser = await transaction.user.findFirst({
+      where: { id, tenantId: req.user!.tenantId, role: { not: 'organization_admin' } },
     });
-    return result;
+    if (!existingUser) return null;
+
+    const user = await transaction.user.update({ where: { id }, data: updateData });
+    if (driverDetails) {
+      const driver = await transaction.driver.findFirst({
+        where: { tenantId: req.user!.tenantId, identityUserId: id },
+      });
+      const expired = driverDetails.licenseExpiryDate < getIndianDateString();
+      const driverData = {
+        ...driverDetails,
+        email,
+        name: typeof data.fullName === 'string' ? data.fullName.trim() : targetUser.fullName,
+        ...(expired ? { status: 'Suspended' } : {}),
+      };
+      const linkedDriver = driver
+        ? await transaction.driver.update({ where: { id: driver.id }, data: driverData })
+        : await transaction.driver.create({
+          data: {
+            tenantId: req.user!.tenantId,
+            ...driverData,
+            safetyScore: 100,
+            status: expired ? 'Suspended' : 'Available',
+            identityUserId: id,
+          },
+        });
+      return transaction.user.update({ where: { id: user.id }, data: { driverId: linkedDriver.id } });
+    }
+    if (typeof data.role === 'string' && role !== 'driver') {
+      await transaction.driver.updateMany({
+        where: { tenantId: req.user!.tenantId, identityUserId: id },
+        data: { identityUserId: null },
+      });
+      return transaction.user.update({ where: { id: user.id }, data: { driverId: null } });
+    }
+    return user;
   });
-  if (updated.count === 0) return res.status(404).json({ detail: 'Organization user not found.' });
+  if (!updated) return res.status(404).json({ detail: 'Organization user not found.' });
 
   const user = await prisma.user.findFirst({
     where: { id, tenantId: req.user!.tenantId },
@@ -183,9 +294,19 @@ adminRouter.put('/users/:id', async (req: Request, res: Response) => {
 
 adminRouter.delete('/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const deleted = await prisma.user.deleteMany({
-    where: { id, tenantId: req.user!.tenantId, role: { not: 'organization_admin' } },
+  const deleted = await prisma.$transaction(async (transaction) => {
+    const user = await transaction.user.findFirst({
+      where: { id, tenantId: req.user!.tenantId, role: { not: 'organization_admin' } },
+      select: { id: true },
+    });
+    if (!user) return false;
+    await transaction.driver.updateMany({
+      where: { tenantId: req.user!.tenantId, identityUserId: id },
+      data: { identityUserId: null },
+    });
+    await transaction.user.delete({ where: { id } });
+    return true;
   });
-  if (deleted.count === 0) return res.status(404).json({ detail: 'Organization user not found.' });
+  if (!deleted) return res.status(404).json({ detail: 'Organization user not found.' });
   return res.status(204).end();
 });

@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { ApiRequestError, api } from '../services/api';
 import { realtime } from '../services/signalr';
+import { calculateVehicleRoi } from '../../../shared/vehicleRoi';
 
 export type ActiveView =
   | 'hero'
@@ -101,7 +102,7 @@ interface AppContextType {
   updateVehicle: (id: string, data: Partial<Vehicle>) => Promise<void>;
   retireVehicle: (id: string) => Promise<void>;
 
-  addDriver: (data: Omit<Driver, 'id' | 'tripsCount' | 'incidentHistoryCount'>) => Promise<{ success: boolean; error?: string }>;
+  addDriver: (data: Omit<Driver, 'id' | 'tripsCount' | 'incidentHistoryCount'> & { password: string }) => Promise<{ success: boolean; error?: string }>;
   updateDriver: (id: string, data: Partial<Driver>) => Promise<void>;
   toggleDriverSuspension: (id: string) => Promise<void>;
   sendLicenseReminderEmail: (driverId: string) => Promise<void>;
@@ -155,7 +156,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Splash Screen State
-  const [isSplashActive, setIsSplashActive] = useState<boolean>(true);
+  const [isSplashActive, setIsSplashActive] = useState<boolean>(false);
 
   // Auth & View State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
@@ -563,7 +564,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const addDriver = async (data: Omit<Driver, 'id' | 'tripsCount' | 'incidentHistoryCount'>) => {
+  const addDriver = async (data: Omit<Driver, 'id' | 'tripsCount' | 'incidentHistoryCount'> & { password: string }) => {
     const cleanLic = data.licenseNumber.trim().toUpperCase();
     const existing = drivers.find((d) => d.licenseNumber.toUpperCase() === cleanLic);
     if (existing) {
@@ -612,6 +613,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendLicenseReminderEmail = async (driverId: string) => {
+    addNotification('info', 'Sending Licence Reminder', 'The reminder email is being sent.');
     try {
       const res = await api.drivers.sendReminder(driverId);
       addNotification('info', 'Compliance Reminder Sent', res.message);
@@ -824,17 +826,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .filter((e) => e.vehicleId === vehicleId && (e.type || e.category) === 'Fuel')
       .reduce((sum, e) => sum + (e.cost || e.amount || 0), 0);
 
-    const profit = rev - (maintCost + fuelCost);
-    const roiPercent = acqCost > 0 ? Math.round((profit / acqCost) * 100) : 0;
-
-    return {
+    return calculateVehicleRoi({
       acquisitionCost: acqCost,
       revenue: rev,
       maintenanceCost: maintCost,
       fuelCost,
-      profit,
-      roiPercent,
-    };
+    });
   };
 
   const getVehicleROI = (vehicle: Vehicle): number => {

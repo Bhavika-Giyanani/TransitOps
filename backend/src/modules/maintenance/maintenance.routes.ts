@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../db';
 import { realtimeEmitter } from '../../realtime';
-import { requireAuth } from '../../middleware/auth';
+import { requireAuth, requireRole } from '../../middleware/auth';
 
 export const maintenanceRouter = Router();
 maintenanceRouter.use(requireAuth);
 
-maintenanceRouter.get('/', async (req: Request, res: Response) => {
+maintenanceRouter.get('/', requireRole('fleet_manager', 'safety_officer', 'financial_analyst'), async (req: Request, res: Response) => {
   const records = await prisma.maintenanceRecord.findMany({
     where: { tenantId: req.user!.tenantId },
     orderBy: { createdAt: 'desc' },
@@ -14,7 +14,7 @@ maintenanceRouter.get('/', async (req: Request, res: Response) => {
   return res.json(records);
 });
 
-maintenanceRouter.post('/', async (req: Request, res: Response) => {
+maintenanceRouter.post('/', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const data = req.body;
   const tenantId = req.user!.tenantId;
   const vehicle = await prisma.vehicle.findFirst({ where: { id: data.vehicleId, tenantId } });
@@ -55,7 +55,7 @@ maintenanceRouter.post('/', async (req: Request, res: Response) => {
   return res.status(201).json(newRecord);
 });
 
-maintenanceRouter.post('/:id/close', async (req: Request, res: Response) => {
+maintenanceRouter.post('/:id/close', requireRole('fleet_manager'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const { finalCost, technicianNotes } = req.body;
 

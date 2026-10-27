@@ -1,566 +1,811 @@
-# TransitOps – complete project guide (for the presentation and viva)
+# TransitOps Project Guide: Beginner's Handbook, Demo Script, and Viva Q&A
 
-> **Current runtime:** React/Vite in `frontend/` and Node.js/Express/Prisma in `backend/`, deployed
-> together as one Render web service. Some detailed examples and diagrams later in this guide are
-> historical .NET design material; see the [current architecture guide](./TRANSITOPS_ARCHITECTURE_GUIDE.md)
-> and [deployment guide](./DEPLOYMENT.md) for implementation and deployment details.
+This is the code-grounded guide to the project. It assumes no prior knowledge of the codebase.
+For local setup, use [SETUP_GUIDE.md](./SETUP_GUIDE.md); for hosting, use
+[DEPLOYMENT.md](./DEPLOYMENT.md). The API permissions and formulas are summarized in
+[ACCESS_AND_KPI.md](./ACCESS_AND_KPI.md).
 
-Read this top to bottom once, then use the module sections and the viva questions to revise.
-Open it in VS Code with **Ctrl + Shift + V** for a formatted view.
+## 1. The project in plain language
 
----
+TransitOps is a multi-organization fleet operations web application for Indian logistics
+companies. Each organization can manage vehicles, drivers, trips, maintenance, expenses,
+compliance, and reports from one workspace. Staff members receive different screens and API
+permissions based on their role.
 
-## 1. What TransitOps is, in one minute
+The application has two main halves:
 
-TransitOps is a **web application for transport (logistics) companies in India**. A company that owns trucks
-and vans uses it to run daily operations:
+- **Frontend:** React renders screens in the browser and sends HTTP requests.
+- **Backend:** Express authenticates requests, checks permissions and organization ownership,
+  applies business rules, and reads or writes PostgreSQL through Prisma.
 
-- keep a list of **vehicles** and **drivers** (with Indian registration and licence checks),
-- plan and dispatch **trips** (which truck, which driver, how much cargo, from where to where),
-- send vehicles for **maintenance**,
-- record **fuel and other expenses**,
-- track **driver safety** (licence expiry, incidents, a calculated safety score),
-- see **dashboards and reports** (utilisation, costs, profit, ROI) and download **PDF/CSV** files.
+The main data path is:
 
-It is sold as **SaaS** (Software as a Service): a company buys a monthly plan online, pays through
-**Razorpay**, receives a **PDF receipt by email**, and gets its own private workspace. Each company only ever
-sees its own data (**multi-tenancy**).
+```text
+Browser (React + TypeScript)
+       │ HTTP/JSON, authentication cookie
+       ▼
+Express API (Node.js)
+       │ Prisma Client + PostgreSQL adapter
+       ▼
+PostgreSQL
+       │
+       ├── Socket.IO sends live events to same-organization clients
+       ├── Nodemailer sends email through configured SMTP
+       ├── PDFKit creates PDF reports and receipts
+       └── node-cron runs hourly licence/safety checks
+```
 
-### Who uses it (actors / roles)
+In development, Express hosts Vite middleware on port `3000`; Vite can also run separately on
+`5173` and proxy API calls to Express. In production, `npm run build` creates the frontend bundle
+in root `dist/`; the same Express server serves that bundle and the API. Render can therefore run
+one web service.
 
-| Role | Main job in the app |
+## 2. Words you need to know
+
+| Term | Simple meaning in this project |
 |---|---|
-| **Organization Admin** | The customer who bought the plan. Creates user accounts for their staff and assigns roles. |
-| **Fleet Manager** | Runs operations: vehicles, drivers, trips, maintenance, expenses, reports. |
-| **Driver** | Sees and completes **their own** trips only. |
-| **Safety Officer** | Watches driver compliance: licences, suspensions, incidents, safety scores. |
-| **Financial Analyst** | Watches money: expenses, revenue, profit, ROI, financial PDF. |
+| Client / frontend | The React application in the browser. It displays the forms and dashboards. |
+| Server / backend | The Node.js Express application. It must not trust the browser to enforce security. |
+| API | A defined HTTP endpoint such as `POST /api/trips` that receives or returns JSON. |
+| Database / PostgreSQL | Persistent storage for users, vehicles, trips, and related records. |
+| Prisma | The ORM and generated TypeScript database client used by the backend. |
+| Tenant | One customer organization's private data boundary. `tenantId` is the tenant identifier. |
+| Authentication | Proving who the user is, here by verifying a signed JWT. |
+| Authorization | Deciding whether that authenticated user may perform an action. |
+| RBAC | Role-Based Access Control: permissions are associated with roles. |
+| ORM | A tool that maps program objects to database records and builds database queries. |
+| Hash | A one-way password representation; the original password is not stored. |
+| Realtime event | A server-pushed update to connected screens without a manual page refresh. |
+| Background job | Scheduled server-side work that runs independently of a user's request. |
+| SaaS | Software as a Service: organizations subscribe to a hosted application. |
 
-There is no separate "Dispatcher": dispatching trips is a Fleet Manager action.
+## 3. Architecture and why it is organized this way
 
----
+The repository is a small full-stack TypeScript application organized by runtime and by backend
+feature. React components are grouped into shared components, dashboards, modals, views, context,
+services, and utilities. Backend API routes are grouped into feature modules such as `drivers`,
+`trips`, and `vehicles`; cross-feature work belongs in `services`, `middleware`, and `jobs`.
 
-## 2. The big picture – what happens when you click something
+This is a pragmatic **feature-module architecture**, not a claim that the project implements every
+layer of Clean Architecture. Each `*.routes.ts` currently declares its Express endpoints and
+contains the request handler, validation, and database calls. That co-location is reasonable for
+an academic single-service project because it keeps a feature's HTTP contract and behavior together
+and avoids empty controller/service wrappers. The reusable calculations (KPI, PDF, safety score),
+cross-cutting security (auth middleware), and scheduled work are already separate. As a route file
+grows or logic is reused, the next sensible step is to extract a controller for HTTP request/response
+handling and a service for reusable business rules; splitting every short handler now would add
+navigation without improving the current behavior.
 
-```
- Browser (React app)  ──HTTP──▶  Express dev server (port 3000) ──proxy──▶  ASP.NET Core API (port 5000)
-        ▲                                                                       │
-        │                                                                       ├─▶ EF Core ─▶ PostgreSQL (Supabase)
-        │                                                                       ├─▶ QuestPDF / CsvHelper (files)
-        └──────────── SignalR (live updates over WebSocket) ◀───────────────────┤
-                                                                                ├─▶ Gmail / Brevo (emails)
-                                                                                ├─▶ Razorpay (payments)
-                                                                                └─▶ Hangfire (daily background jobs)
-```
+### Directory map
 
-**Example: a Fleet Manager dispatches a trip**
-
-1. The manager clicks **Dispatch** in the React page.
-2. React calls `POST /api/trips/{id}/dispatch` through `services/api.ts`. The login cookie travels with it.
-3. The API checks the cookie (JWT) and the role: only a Fleet Manager may dispatch.
-4. `TripsController` opens a **database transaction**, re-checks the rules (driver licence valid, vehicle
-   available, cargo ≤ capacity) and marks trip = Dispatched, vehicle = On Trip, driver = On Trip, all
-   together.
-5. EF Core saves the changes to PostgreSQL.
-6. The API sends a **SignalR** message to everyone in that company, so other open dashboards update
-   instantly without refreshing.
-7. React shows a success message and the new statuses.
-
-Every feature follows this same pattern: **React page → API controller → rules/validation → database → reply
-(+ live update)**.
-
-In the deployed version there is no Express server: the API serves the built React files itself, so the
-whole app is one website on one address.
-
----
-
-## 3. Tools used, what they do, and why
-
-### Frontend (what the user sees)
-
-| Tool | What it is | Why we used it | Where |
-|---|---|---|---|
-| **React 19** | JavaScript library for building user interfaces from reusable **components** | Industry standard; the UI updates automatically when data changes | `frontend/src/components` |
-| **TypeScript** | JavaScript with types | Catches mistakes before running (e.g. wrong field name) | every `.ts/.tsx` file |
-| **Vite** | Build tool and dev server | Very fast reloads during development; builds the final files | `frontend/vite.config.ts` |
-| **Tailwind CSS 4** | CSS written as small class names (`text-sm`, `rounded-xl`) | Fast, consistent styling; light/dark theme | class names in components |
-| **SignalR client** | Keeps a live connection to the API | Live updates (trip dispatched, maintenance changed) without refresh | `services/signalr.ts` |
-| **lucide-react** | Icon library | Clean icons | imports in components |
-| **motion** | Animation library | Small UI animations | a few components |
-| **Express** (dev only) | Small Node.js web server | Serves the React app locally and forwards `/api` and `/hubs` to the .NET API | `frontend/server.ts` |
-
-### Backend (the server and rules)
-
-| Tool | What it is | Why we used it | Where |
-|---|---|---|---|
-| **ASP.NET Core Web API (.NET 10, C#)** | Microsoft's framework for web APIs | Fast, secure, strongly typed, great tooling | `backend/TransitOps.Api` |
-| **Entity Framework Core** | ORM: maps C# classes to database tables | Write C# instead of raw SQL; migrations for schema changes | `TransitOpsDbContext.cs`, `Migrations/` |
-| **Npgsql** | PostgreSQL driver for .NET | Lets EF Core talk to PostgreSQL | `Program.cs` |
-| **ASP.NET Core Identity** | Built-in user system | Secure password hashing, lockout, user/role storage | `AuthController`, `ApplicationUser` |
-| **JWT (JSON Web Token)** | Signed login token | Stateless login; stored in an **HttpOnly cookie** so JavaScript can't steal it | `AuthController.cs` |
-| **RBAC** | Role-Based Access Control | Each endpoint says which roles may use it | `[Authorize(Roles = "...")]` on controllers |
-| **FluentValidation** | Validation rules written as C# classes | Clear, testable rules (e.g. Indian licence format) | `Application/Validators` |
-| **SignalR** | Real-time messaging over WebSockets | Push live updates to dashboards | `Hubs/TransitOpsHub.cs` |
-| **Hangfire** | Background job scheduler | Run daily jobs (licence check, safety scores) without a person | `BackgroundJobs/HangfireJobs.cs`, `Startup/RecurringJobs.cs` |
-| **QuestPDF** | PDF generation in C# | Professional PDFs: receipts, ledger, ROI report | `Application/Reports` |
-| **CsvHelper** | CSV file writing | Excel-friendly trip export with correct escaping | `CsvHelperService.cs` |
-| **Swagger** | Auto-generated API documentation page | Try every endpoint in the browser at `/swagger` (Development only) | `Program.cs` |
-| **xUnit** | .NET test framework | 68 automated unit tests | `backend/TransitOps.Tests` |
-
-### Data, services and delivery
-
-| Tool | What it is | Why |
-|---|---|---|
-| **PostgreSQL** | Relational database | Reliable, free, supports transactions and advanced indexes |
-| **Supabase** | Hosted PostgreSQL in the cloud (Mumbai) | No database server to manage; free tier |
-| **Razorpay (Test Mode)** | Indian payment gateway | Card/UPI/netbanking checkout; test mode moves no real money |
-| **MailKit + Gmail SMTP / Brevo** | Email sending library and mail servers | Verification codes, receipts with PDF, licence reminders. MailKit replaced .NET's old `SmtpClient`, which could not log in to Brevo |
-| **Git + GitHub** | Version control and code hosting | History of every change, teamwork |
-| **GitHub Actions (CI)** | Automatic checks on every push | Builds and tests backend, frontend and Docker image |
-| **Docker** | Packages the app into one container | Runs the same everywhere |
-| **Render** | Cloud hosting | Runs the Docker container on the internet |
-| **Postman / Swagger** | API testing tools | Manual API testing |
-| **VS Code / Visual Studio 2026** | Editors | Write, run (F5) and debug the code |
-
----
-
-## 4. Folder tour
-
-```
-TransitOps-NET/
-├── backend/                         .NET solution (TransitOps.sln) – Clean Architecture
-│   ├── TransitOps.Domain/           Entities (Vehicle, Driver, Trip…) and enums (statuses, roles)
-│   ├── TransitOps.Application/      DTOs, validators, PDF/CSV generators, safety score formula
-│   ├── TransitOps.Infrastructure/   Database (DbContext, migrations), services, Hangfire jobs, email
-│   ├── TransitOps.Api/              Controllers (endpoints), SignalR hub, Program.cs, Startup/
-│   └── TransitOps.Tests/            xUnit unit tests
-├── frontend/                        React app
+```text
+TransitOps-WTP/
+├── backend/
+│   ├── prisma/                 Prisma schema and CLI configuration
+│   ├── server.ts               Express application composition and startup
 │   └── src/
-│       ├── components/views/        One screen per menu item (Vehicles, Trips, Reports…)
-│       ├── components/dashboard/    One dashboard per role
-│       ├── components/modals/       Pop-up forms (Add vehicle, Create trip…)
-│       ├── context/AppContext.tsx   Shared app state: logged-in user, data, actions
-│       ├── services/api.ts          All calls to the API
-│       └── utils/indianFormats.ts   Indian registration/licence checks for forms
-├── database/                        Supabase security (row-level security) scripts
-├── docs/                            Guides, UML diagrams, test report, this guide
-├── tests/api/                       199+ end-to-end API checks (Python)
-├── tools/                           Offline test database, mail catcher, start script
-├── Dockerfile, render.yaml          Deployment
-└── .github/workflows/ci.yml         Automatic checks
+│       ├── db.ts               PostgreSQL pool, Prisma client, initial seed data
+│       ├── middleware/         JWT authentication and role checks
+│       ├── modules/            Feature routers and their request handlers
+│       ├── jobs/               Scheduled driver compliance job
+│       ├── services/           Email, KPI, PDF, and safety-score logic
+│       ├── utils/              Shared backend date helpers
+│       ├── realtime.ts         Socket.IO setup and tenant-scoped event emission
+│       └── swagger.ts          OpenAPI document for the API
+├── frontend/
+│   ├── vite.config.ts          Vite development/build configuration
+│   └── src/
+│       ├── components/         Shared UI, role dashboards, modals, and views
+│       ├── context/            App-wide session/data and theme state
+│       ├── services/           HTTP API and realtime client
+│       ├── utils/              Browser formatting helpers
+│       ├── App.tsx             Main layout, view selection, modal ownership
+│       ├── main.tsx            Browser entry point
+│       └── types.ts            Frontend domain and API-facing TypeScript types
+├── shared/
+│   ├── indianFormats.ts        Indian phone, licence, and registration format checks
+│   └── vehicleRoi.ts           ROI calculation shared by browser and PDF export
+├── database/                   Optional SQL/RLS reference scripts
+├── docs/                       Setup, deployment, architecture, and viva material
+├── package.json                Root scripts and runtime/development dependencies
+└── render.yaml                 Render service configuration
 ```
 
-**Clean Architecture (the 4 backend projects)** – like floors of a building, each only depends on the floor
-below:
+### Important file-by-file guide
 
-- **Domain** = the business things and their states. No database, no web. (Most stable.)
-- **Application** = business rules that are not about storage: validation, formulas, PDF layouts.
-- **Infrastructure** = how things are stored and sent: database, email, Razorpay, background jobs.
-- **Api** = the doorway: HTTP endpoints, security, real-time hub, startup.
+#### Root and frontend
 
-Why? Each part can change without breaking the others, and rules can be unit-tested without a database.
-
----
-
-## 5. Modules explained, with viva questions
-
-### Module 1 – Login, security and roles
-
-**What it does:** users sign in with email and password; the app remembers them for 30 minutes and only shows
-what their role allows.
-
-**How it works:**
-
-1. `POST /api/auth/login` – ASP.NET Identity checks the password against a **hash** (passwords are never
-   stored in plain text).
-2. If correct, the API creates a **JWT** (a signed token containing user id, role and company/tenant id) and
-   puts it in an **HttpOnly cookie** called `transitops_access`, valid for **30 minutes**.
-3. Every later request carries the cookie automatically. The API checks the signature, expiry and role.
-4. **Lockout:** 5 wrong passwords → account locked for 15 minutes.
-5. **Rate limit:** at most 10 login attempts per minute per computer (stops password-guessing robots).
-6. **Logout** deletes the cookie.
-7. **Multi-tenancy:** every record has a `TenantId`; every query filters by the user's tenant, so company A
-   can never see company B's data.
-
-**Files:** `AuthController.cs`, `Program.cs` (Identity, JWT, policies, rate limiting), `ApplicationUser`.
-
-**Viva questions**
-
-1. *How are passwords stored?* – As salted hashes by ASP.NET Identity, never in plain text.
-2. *What is a JWT and why HttpOnly cookie instead of localStorage?* – A signed token with the user's id, role
-   and tenant. In an HttpOnly cookie, JavaScript (and so an XSS attack) cannot read it.
-3. *What is RBAC here?* – Each endpoint declares allowed roles, e.g. `[Authorize(Roles = "FleetManager")]`;
-   others get 403 Forbidden. Hiding buttons in the UI is only convenience; the API enforces it.
-4. *What is the difference between 401 and 403?* – 401 = not logged in; 403 = logged in but not allowed.
-5. *How do you stop brute-force attacks?* – Lockout after 5 failures for 15 minutes plus a login rate limit
-   of 10 per minute per IP.
-6. *How is data separated between companies?* – Every table row has a TenantId taken from the JWT, and every
-   query filters by it.
-7. *Is there public sign-up?* – No. Users are created by their Organization Admin; the admin is created only
-   after a verified purchase.
-
-### Module 2 – Organization Admin and user management
-
-**What it does:** the admin creates, edits and deletes staff accounts and gives each a role (Fleet Manager,
-Driver, Safety Officer, Financial Analyst). Creating a Driver account also creates the driver profile
-(licence details) and links them.
-
-**Rules:** an admin cannot create another admin; deleting a user removes their sign-in but keeps trip history.
-
-**Files:** `OrganizationUsersController.cs`, `OrganizationAdminDashboard.tsx`.
-
-**Viva questions**
-
-1. *Why can't the admin create another admin?* – The admin role is only created through the paid purchase
-   flow; this prevents privilege escalation.
-2. *What happens to a deleted driver's trips?* – Kept for history and reports; only sign-in is removed.
-3. *Where is the role checked?* – In the API (`[Authorize(Roles = "OrganizationAdmin")]`) and in validation
-   (role must be one of the four operational roles).
-
-### Module 3 – SaaS purchase, payment and receipt
-
-**Steps:**
-
-1. **Choose plan** (Essential ₹2,999 / Growth ₹7,499 / Enterprise ₹19,999, one month). Prices live on the
-   server (`appsettings.json`) so nobody can change the price from the browser.
-2. **Enter organization, name, email** → the API emails a **6-digit code** (valid 10 minutes, stored only as
-   a hash).
-3. **Verify the code.**
-4. **Pay**: the API creates a **Razorpay order** for the exact amount; the browser opens Razorpay Checkout.
-5. After payment, the API **verifies**: (a) the HMAC-SHA256 **signature** from Razorpay, and (b) fetches the
-   payment from Razorpay to confirm amount, currency (INR) and status "captured". Only then is it "Paid".
-6. In one database transaction: create the **Organization** (new TenantId) and **Subscription**.
-7. Email 1: **receipt** – HTML email with a **QuestPDF receipt attached** (receipt number, IST time, amount in
-   words, payment and order IDs, "Test Mode" banner).
-8. Email 2: **single-use account setup link** (valid 48 hours). The customer chooses their own password –
-   passwords are never emailed.
-9. A Razorpay **webhook** (`payment.captured`) also confirms payments, and is safe to receive twice
-   (idempotent, using the event ID).
-
-**Files:** `OnboardingController.cs`, `SaasOnboardingService.cs`, `SubscriptionReceiptPdf.cs`,
-`SmtpEmailSender.cs`, `SaasOnboardingView.tsx`.
-
-**Viva questions**
-
-1. *How do you know a payment is genuine?* – Verify Razorpay's HMAC-SHA256 signature with our secret, then
-   fetch the payment from Razorpay and check order, amount, INR and "captured".
-2. *Why are prices on the server?* – So a user can't edit the amount in the browser.
-3. *What is a webhook?* – Razorpay calling our API directly when a payment event happens; it works even if
-   the customer closes the browser.
-4. *What is idempotency?* – Processing the same event twice has no extra effect; we store webhook event IDs.
-5. *Why test mode?* – No real money moves; real cards are not needed for a demo.
-6. *How is the PDF made?* – QuestPDF builds it in C# (A4 layout, tables, amount in words in the Indian system),
-   then it is attached to the email.
-7. *Why a setup link instead of emailing a password?* – Emails can be read by others; a single-use, expiring
-   link lets the user choose the password themselves.
-
-### Module 4 – Vehicles and Indian registration validation
-
-**What it does:** add, edit, retire vehicles; filter by status/region/search. Statuses: **Available, On Trip,
-In Shop, Retired**.
-
-**Indian registration rules** (Central Motor Vehicles Rules):
-
-- Standard: `MH-12-AB-1234` = state code (must be a real state/UT) + RTO number + series letters + number.
-- Delhi style: `DL-1C-AB-1234`. Bharat series: `22-BH-1234-AA` (from 2021, letters I/O not allowed).
-- Stored in one standard form, so `mh12ab1234` and `MH-12-AB-1234` count as the **same** vehicle (duplicates
-  are blocked, per company).
-- Checked in the browser (instant message) **and** in the API (cannot be bypassed).
-
-**Other rules:** capacity > 0; odometer and cost not negative; a vehicle on a trip or in maintenance cannot be
-retired; "delete" means **retire** (history is kept).
-
-**Files:** `VehiclesController.cs`, `IndianRegulatoryFormats.cs`, `Validators.cs`, `VehiclesView.tsx`,
-`AddVehicleModal.tsx`, `utils/indianFormats.ts`.
-
-**Viva questions**
-
-1. *Explain the registration format.* – State code, RTO code, series, number, e.g. MH-12-AB-1234; BH series
-   for vehicles that move between states.
-2. *Why validate on both frontend and backend?* – Frontend for quick feedback; backend because a request can
-   be sent without the UI.
-3. *How do you prevent duplicate registrations?* – Normalise to one format and use a unique database index
-   per tenant; also checked before saving.
-4. *Why retire instead of delete?* – Trips, expenses and reports still refer to the vehicle.
-
-### Module 5 – Drivers and Indian licence validation
-
-**Licence format (Sarathi / national format):** 15 characters – state code + RTO code + issue year + 7-digit
-number, e.g. `MH14 20180045921`. Issue year between 1950 and this year. **Licence class** must be an official
-class (LMV, LMV-TR, MGV, HMV, HGMV, HPMV, HTV…). **Expiry** at most 20 years ahead and not before issue year.
-
-**Statuses:** Available, On Duty, On Trip, Off Duty, Suspended. Suspended or expired-licence drivers cannot be
-given trips. A suspended driver with an expired licence cannot be reinstated.
-
-**Files:** `DriversController.cs`, `IndianRegulatoryFormats.cs`, `AddDriverModal.tsx`, `DriversView.tsx`.
-
-**Viva questions**
-
-1. *What does the licence number contain?* – State, RTO, year of issue and a serial number.
-2. *What happens to a driver whose licence expires?* – Cannot be assigned trips; the daily job suspends them.
-3. *Can a driver's status change during a trip?* – No, the API blocks it while a trip is dispatched.
-
-### Module 6 – Trips (the core workflow)
-
-**Life cycle:** `Draft → Dispatched → Completed`, or `Draft/Dispatched → Cancelled`.
-
-| Step | Who | Checks | Effect |
-|---|---|---|---|
-| Create (Draft) | Fleet Manager | cargo ≤ vehicle capacity, driver eligible, vehicle Available | Trip saved; nothing reserved yet |
-| Dispatch | Fleet Manager | all checks again **inside a transaction** | Trip, vehicle and driver → On Trip together |
-| Complete | Fleet Manager or the trip's own driver | final odometer > current, fuel ≥ 0 | Trip Completed; vehicle & driver Available; fuel expense recorded (litres × ₹96.50); safety score updated |
-| Cancel | Fleet Manager | not already completed/cancelled | Vehicle & driver freed |
-
-**No double booking:** the dispatch uses a **serializable database transaction** plus **unique indexes** that
-allow only one dispatched trip per vehicle and per driver. Two people pressing Dispatch at the same moment –
-only one succeeds (tested).
-
-**Files:** `TripsController.cs`, `TripsView.tsx`, `CreateTripModal.tsx`, `CompleteTripModal.tsx`.
-
-**Viva questions**
-
-1. *How do you prevent the same truck being sent on two trips?* – Status checks, a serializable transaction,
-   and a partial unique index on dispatched trips per vehicle/driver.
-2. *What is a transaction?* – A group of database changes that all succeed or all fail together.
-3. *Why re-check everything at dispatch?* – Things may have changed since the draft (licence expired,
-   vehicle sent to maintenance).
-4. *Can a driver complete someone else's trip?* – No; the API compares the trip's driver with the logged-in
-   user (403 otherwise).
-
-### Module 7 – Maintenance
-
-**What it does:** open a work order → vehicle becomes **In Shop** (cannot be dispatched); close it (with final
-cost) → vehicle becomes **Available** again (unless another open order exists). A vehicle on a trip or
-retired cannot enter maintenance; only one open work order per vehicle.
-
-**Files:** `MaintenanceController.cs`, `MaintenanceView.tsx`, `LogMaintenanceModal.tsx`.
-
-**Viva questions**
-
-1. *Why can't an In Shop vehicle be dispatched?* – It is unsafe/unavailable; dispatch rejects it.
-2. *Who can create maintenance?* – Fleet Manager; Safety Officer and Financial Analyst can only view.
-
-### Module 8 – Fuel and expenses
-
-**What it does:** record Fuel, Toll, Maintenance, Permit, Insurance or Other expenses for a vehicle/trip.
-Fuel needs litres. Amounts must be positive. The vehicle and trip must match. Fleet Manager and Financial
-Analyst only.
-
-**Files:** `ExpensesController.cs`, `ExpensesView.tsx`.
-
-### Module 9 – Safety score (calculated, not typed in)
-
-Every driver starts at **100**, then:
-
-| Factor | Points |
+| File/folder | Responsibility |
 |---|---|
-| Each recorded incident | −8 (maximum −40) |
-| Licence expired | −25 |
-| Licence expires within 30 days | −5 |
-| Fuel discipline: share of recent trips (90 days) that used much more fuel than the vehicle's normal (below 85% of rated km/L) | up to −15 (needs at least 3 trips) |
-| Experience | +1 per 25 completed trips (max +5) |
+| `package.json` | Scripts (`dev`, `build`, `start`, `lint`, Prisma commands) and package versions. |
+| `frontend/src/main.tsx` | Mounts the React application into the HTML root element. |
+| `frontend/src/App.tsx` | Wraps providers, chooses the allowed view, owns shared modals, and composes the page layout. |
+| `frontend/src/types.ts` | Shared frontend interfaces for roles, vehicles, drivers, trips, and records. |
+| `frontend/src/context/AppContext.tsx` | Session, loaded tenant data, API actions, notifications, and computed frontend values. |
+| `frontend/src/context/ThemeContext.tsx` | Light/dark theme state and theme application. |
+| `frontend/src/services/api.ts` | Typed HTTP calls to Express; centralizes request/error handling. |
+| `frontend/src/services/signalr.ts` | Legacy-named compatibility wrapper; the active realtime client uses `socket.io-client`. It is not proof that the backend uses SignalR. |
+| `frontend/src/utils/indianFormats.ts` | Re-exports shared India-specific format validation for UI forms. |
+| `frontend/src/utils/currency.ts` | Currency-formatting helpers. |
+| `frontend/src/components/Navbar.tsx` | Top navigation, user actions, and notification affordances. |
+| `frontend/src/components/Sidebar.tsx` | Role-aware application navigation. Backend authorization remains the security boundary. |
+| `frontend/src/components/NotificationToast.tsx` | Accessible timed notifications; pauses timing while a toast is hovered. |
+| `frontend/src/components/dashboard/*Dashboard.tsx` | Role-specific operational, driver, safety, and finance dashboards. |
+| `frontend/src/components/dashboard/GettingStartedGuide.tsx` | First-use guidance and setup progress for supported roles. |
+| `frontend/src/components/dashboard/LiveRouteRadar.tsx` | Visual trip/route panel; it is not a GPS tracking source. |
+| `frontend/src/components/modals/AddVehicleModal.tsx` | Vehicle creation form. |
+| `frontend/src/components/modals/AddDriverModal.tsx` | Driver profile/login creation form. |
+| `frontend/src/components/modals/CreateTripModal.tsx` | Draft trip form and eligibility/capacity feedback. |
+| `frontend/src/components/modals/CompleteTripModal.tsx` | Completion odometer and fuel form. |
+| `frontend/src/components/modals/LogMaintenanceModal.tsx` | Maintenance work-order creation form. |
+| `frontend/src/components/views/AuthViews.tsx` | Login and account setup views. |
+| `frontend/src/components/views/DashboardView.tsx` | Onboarding/dashboard switch and role-dashboard selection. |
+| `frontend/src/components/views/TripsView.tsx` | Trip lists and trip actions. |
+| `frontend/src/components/views/DriversView.tsx` | Driver list and compliance actions. |
+| `frontend/src/components/views/VehiclesView.tsx` | Vehicle list and asset actions. |
+| `frontend/src/components/views/MaintenanceView.tsx` | Maintenance records and closure actions. |
+| `frontend/src/components/views/ExpensesView.tsx` | Expense entry and ledger interaction. |
+| `frontend/src/components/views/ReportsView.tsx` | Report/export controls. |
+| `frontend/src/components/views/OrganizationAdminDashboard.tsx` | Organization staff account administration. |
+| `frontend/src/components/views/SaasOnboardingView.tsx` | Subscription selection, email verification, payment, and password setup flow. |
+| `frontend/src/components/views/HeroView.tsx` | Public landing page and demo-role entry points. |
+| `frontend/src/components/views/NotFoundView.tsx` | Unknown-route page. |
 
-Result between 0 and 100. Bands: **90+ Excellent, 75–89 Good, 60–74 Needs attention, below 60 High risk**.
-It updates when a trip is completed, an incident is recorded, the driver is edited, and every night.
-Safety Officers click the score to see the breakdown.
+#### Backend
 
-**Files:** `SafetyScoreCalculator.cs`, `SafetyScoreService.cs`, `SafetyOfficerDashboard.tsx`.
+| File/folder | Responsibility |
+|---|---|
+| `backend/server.ts` | Creates Express/HTTP server, middleware, API mounts, health/docs endpoints, Vite/static hosting, Socket.IO and job startup. |
+| `backend/src/db.ts` | Loads environment, creates the PostgreSQL pool and Prisma adapter/client, and seeds plans/demo data when appropriate. Demo accounts use `DEMO_ACCOUNT_PASSWORD`; there is no hardcoded demo-login password. |
+| `backend/src/middleware/auth.ts` | Signs/verifies JWTs, reads bearer/cookie tokens, attaches the user to the request, and supplies `requireAuth` / `requireRole`. |
+| `backend/src/modules/auth/auth.routes.ts` | Login, session verification, and logout endpoints. |
+| `backend/src/modules/admin/admin.routes.ts` | Organization Admin staff list/create/update/delete endpoints. |
+| `backend/src/modules/vehicles/vehicles.routes.ts` | Tenant-scoped vehicle CRUD/status endpoints and registration normalization. |
+| `backend/src/modules/drivers/drivers.routes.ts` | Driver profile actions, expiry checks, score refresh, reminders, suspension, and incident endpoints. |
+| `backend/src/modules/drivers/driverAccounts.ts` | Repairs/ensures matching driver login/profile data for older account records. |
+| `backend/src/modules/drivers/driverIdentity.ts` | Resolves the current user's linked driver profile. |
+| `backend/src/modules/trips/trips.routes.ts` | Tenant-scoped trip listing, draft creation, dispatch, completion, cancellation, and ownership checks. |
+| `backend/src/modules/maintenance/maintenance.routes.ts` | Maintenance work-order creation/closure and associated vehicle status changes. |
+| `backend/src/modules/expenses/expenses.routes.ts` | Expense list/create/delete endpoints. |
+| `backend/src/modules/kpi/kpi.routes.ts` | Role-protected KPI endpoints. |
+| `backend/src/modules/reports/reports.routes.ts` | PDF/CSV export endpoints and driver receipt ownership checks. |
+| `backend/src/modules/onboarding/onboarding.routes.ts` | Subscription/email verification/Razorpay callback and organization setup endpoints. |
+| `backend/src/services/kpi.ts` | Fleet, driver, safety, and financial KPI calculations. |
+| `backend/src/services/safetyScore.ts` | Safety score factor calculation and persistence. |
+| `backend/src/services/pdf.ts` | PDFKit report and receipt creation. |
+| `backend/src/services/email.ts` | Nodemailer SMTP transport and transactional messages. |
+| `backend/src/jobs/driverCompliance.job.ts` | Startup check and hourly Asia/Kolkata licence/safety checks and reminders. |
+| `backend/src/realtime.ts` | Socket.IO server setup, tenant rooms, and event publishing. |
+| `backend/src/utils/indianDate.ts` | India-time date-string helper for expiry logic. |
+| `backend/src/swagger.ts` | OpenAPI description consumed by Swagger UI. |
+| `backend/prisma/schema.prisma` | Database models, fields, primary keys, defaults, and indexes. |
+| `backend/prisma.config.ts` | Prisma CLI datasource/environment configuration. |
 
-**Viva questions**
+## 4. Roles, permissions, and organization isolation
 
-1. *Why is fuel used in a safety score?* – No GPS/telematics data exists; very high fuel use is a common proxy
-   for harsh acceleration and idling.
-2. *Why not let managers type the score?* – A calculated score is consistent and can't be manipulated.
-3. *How is it tested?* – Unit tests for every factor and the 0–100 limits.
+The five role values are `organization_admin`, `fleet_manager`, `driver`, `safety_officer`, and
+`financial_analyst`. They are stored as strings. There is no separate dispatcher role.
 
-### Module 10 – Dashboards, KPIs and reports
-
-**Fleet KPIs:** active vehicles (On Trip), available, in maintenance, active trips (Dispatched), pending trips
-(Draft), drivers on duty, and **Fleet Utilisation = On-Trip vehicles ÷ non-retired vehicles × 100**.
-
-**Financial KPIs:** Fuel spend, Maintenance spend, Other expenses, **Total OPEX = fuel + maintenance + other**,
-**Gross revenue = revenue of completed trips**, **Net profit = revenue − OPEX**, **Net margin = profit ÷ revenue
-× 100**, **Cost per km = OPEX ÷ km of completed trips**.
-
-**Vehicle ROI = (Revenue − (Maintenance + Fuel)) ÷ Acquisition cost × 100.**
-
-**Exports:** Trips **CSV** (CsvHelper, correctly escaped), **Financial ledger PDF** (Financial Analyst),
-**Fleet ROI PDF** (Fleet Manager), **Trip receipt PDF** (Fleet Manager or the trip's driver). Each role has
-its own dashboard.
-
-**Files:** `KpiService.cs`, `KpiController.cs`, `ReportsController.cs`, `QuestPdfReportService.cs`,
-`CsvHelperService.cs`, the dashboards in `components/dashboard`.
-
-**Viva questions**
-
-1. *How is utilisation calculated? Why exclude retired vehicles?* – On-trip ÷ non-retired × 100; retired
-   vehicles can never be used, so including them would make utilisation look falsely low.
-2. *Explain ROI.* – Operating profit of a vehicle divided by what it cost to buy.
-3. *Are dashboard numbers real?* – Yes, calculated by the API from database records (tests compare them).
-
-### Module 11 – Real-time updates (SignalR)
-
-When a trip is dispatched/completed, a vehicle or driver status changes, maintenance or expenses change, the
-API sends a message (e.g. `ReceiveTripDispatched`) to the **group of that company** (`tenant_{id}`). Open
-dashboards update immediately. Connections require login and can only join their own company's group.
-
-**Viva:** *Why SignalR instead of refreshing?* – Instant updates and less server load than polling; it uses
-WebSockets with automatic fallbacks.
-
-### Module 12 – Background jobs (Hangfire)
-
-| Job | When (UTC) | What it does |
+| Role | Main job | Typical permitted actions |
 |---|---|---|
-| Licence expiry check | 02:00 daily | Suspends drivers whose licence expired; logs ones expiring in 30 days |
-| Safety score recalculation | 02:30 daily | Recalculates every driver's score |
-| Maintenance audit | 03:00 daily | Flags vehicles due for service by odometer |
-| Stale draft trips | 03:30 daily | Reports draft trips older than 48 hours |
+| Organization Admin | Manage the organization's staff accounts | List/create/update/delete operational accounts; cannot promote users to another Organization Admin. |
+| Fleet Manager | Run day-to-day fleet operations | Manage vehicles, drivers, trips, maintenance, expenses, and operational reports. |
+| Driver | Work on assigned deliveries | Read assigned trips and complete their own dispatched trips; does not receive other drivers' trips. |
+| Safety Officer | Monitor people and compliance | Review drivers, scores, incidents, licence reminders/suspensions, and maintenance safety information. |
+| Financial Analyst | Review costs and returns | Read financial/operational records, manage expense entries, and export reports as authorized. |
 
-Jobs are stored in PostgreSQL, so they survive restarts. If the server was asleep, a missed job runs when it
-wakes. Dashboard at `/hangfire` (Fleet Manager, Development only).
+This follows least-privilege separation: the admin manages staff identities, the Fleet Manager
+changes operational records, the Driver can act only on assigned work, the Safety Officer focuses
+on compliance, and the Financial Analyst focuses on financial analysis. The split reduces
+accidental edits and avoids showing unrelated controls to each role.
 
-**Viva:** *Why Hangfire?* – Reliable scheduled jobs inside the .NET app with retries and a dashboard, no
-separate server needed.
+The exact endpoint matrix is documented in [ACCESS_AND_KPI.md](./ACCESS_AND_KPI.md). The
+frontend hides actions that a role should not use, but hiding a button is not security. The API
+enforces authorization using `requireAuth` and `requireRole`.
 
-### Module 13 – Database (PostgreSQL + EF Core)
+### How tenant isolation works
 
-**Main tables:** Vehicles, VehicleDocuments, Drivers, Trips, MaintenanceRecords, Expenses, Organizations,
-OrganizationSubscriptions, SaasPurchases, RazorpayWebhookReceipts, plus Identity tables (users, roles).
+1. A signed-in JWT includes the user's `tenantId`.
+2. Authentication middleware validates the JWT and attaches its trusted payload to `req.user`.
+3. Each protected query/write includes the authenticated `tenantId` in its Prisma `where` clause.
+4. Driver endpoints further filter by the driver profile linked to that user.
+5. Realtime events are emitted with a tenant identifier and delivered within the corresponding tenant room.
 
-**Relationships:** a Vehicle has many Trips, MaintenanceRecords and Expenses; a Driver has many Trips; a Trip
-has many Expenses. Deleting a vehicle/driver with trips is **restricted** (history protected).
+The application stores `tenantId` on its operational models and indexes it. Many associations are
+scalar ID fields rather than declared Prisma relation/FK fields. Therefore the application-level
+tenant filters and business checks are essential; the schema does not by itself create full
+relational foreign-key enforcement. The PostgreSQL RLS scripts are defense-in-depth/reference
+material and do not replace API filters.
 
-**Important indexes:** unique registration and licence per tenant; one dispatched trip per vehicle and per
-driver; unique trip code; unique Razorpay IDs. Money columns are `numeric(18,2)`.
+`User.email` is globally unique, while vehicle registrations and licence duplicate checks are scoped
+to the organization. A duplicate registration/licence in another tenant is not disclosed by the
+organization-scoped duplicate check.
 
-**Migrations** (EF Core) record schema changes so every database can be upgraded safely. On startup,
-`DatabaseInitializer` creates tables on an empty database, applies migrations and creates indexes; demo data
-is seeded by `DemoDataSeeder`.
+## 5. Authentication: login, JWT, and protected routes
 
-**Viva questions**
+### Login flow
 
-1. *What is an ORM?* – It maps classes to tables so we work with C# objects instead of SQL strings.
-2. *What is a migration?* – A versioned script for a schema change, applied in order.
-3. *Why PostgreSQL?* – Free, reliable, transactions, partial/expression indexes, works with Supabase.
-4. *What is a foreign key?* – A column that must point to an existing row in another table (e.g.
-   Trip.VehicleId → Vehicles).
+1. The browser sends email and password to `POST /api/auth/login`.
+2. The API finds the user and verifies the password with `bcryptjs` against `passwordHash`.
+3. On success, the server signs a JWT using `JWT_SECRET`; configuration requires a secret with at
+   least 32 characters.
+4. The JWT expires after **7 days** and is set in the `transitops_jwt` HttpOnly cookie.
+5. The browser sends the cookie automatically on later requests. The API can also accept a
+   `Bearer` token for API clients.
+6. `requireAuth` verifies the token signature and expiry; `requireRole(...)` checks the role.
+7. The frontend restores the current session from the API and chooses the role-appropriate view.
 
-### Module 14 – Validation
+JWT means JSON Web Token. It consists of a signed header, payload, and signature. The payload is
+readable by its holder; it is signed, not encrypted. It must not contain secrets. In this project
+the payload includes identity, email, role, tenant, name, and demo-account status. The secret stays
+on the server. Passwords are hashed with bcrypt (10 rounds in account creation), never sent back
+to the browser, and never stored as plaintext.
 
-Two layers: **frontend** (instant messages in forms, `indianFormats.ts`) and **backend** (FluentValidation
-classes in `Validators.cs` plus checks in controllers). The backend is the real guard. Errors come back as a
-standard JSON "problem" response that the forms display.
+The cookie is HttpOnly so ordinary page JavaScript cannot read it. Production must use HTTPS and a
+secure cookie configuration. Logout clears the cookie; a copied JWT remains valid until expiry
+unless the application adds a revocation list/session-version mechanism.
 
-### Module 15 – Testing and quality
+**Viva distinction:** frontend route/view gating is usability; backend middleware is authorization.
+Never rely only on a React check for access control.
 
-- **68 unit tests** (xUnit): Indian formats, safety score formula, receipt PDF.
-- **201 end-to-end API checks** (`tests/api/checklist.py`) following the test checklist: login, all role
-  permissions, KPIs, vehicles, drivers, trips (including two dispatches at the same time), maintenance,
-  expenses, reports, database constraints, errors, demo data. Run on a separate local test database.
-- **CI (GitHub Actions)**: every push builds and tests the backend, type-checks and builds the frontend and
-  builds the Docker image.
-- Results: `docs/TEST_REPORT.md`.
+## 6. End-to-end business flow
 
-**Viva:** *Unit test vs end-to-end test?* – A unit test checks one piece of code alone (e.g. the safety
-formula); an end-to-end test calls the running API like a real user.
+### Subscription and first Organization Admin
 
-### Module 16 – Deployment
+```text
+Choose plan → enter organization/admin/email → verify email code
+→ create Razorpay order → verify payment signature server-side
+→ receipt PDF/email + admin setup-link email
+→ admin creates initial password → organization workspace
+```
 
-The **Dockerfile** builds the React app and the .NET API into **one container**; the API serves the React
-files, so the website, API and live updates share one address (no cross-site cookie problems). **Render**
-runs the container; **Supabase** hosts the database; **Brevo** sends email (Render's free plan blocks Gmail's
-port). Secrets (database password, keys) are stored as Render environment variables, never in GitHub.
+The payment/email operations require environment configuration. A test fallback key is not a live
+payment credential. The setup URL uses `APP_BASE_URL` when configured. Payment callbacks and email
+delivery must be tested with sandbox credentials before deployment.
 
-**Live site:** https://transitops-s0vg.onrender.com (Render free plan, Singapore; database: the project's Supabase in Mumbai).
+### Fleet operations
 
-**How a deployment happens:**
+1. Organization Admin creates operational staff accounts; driver account creation creates a
+   corresponding Driver profile.
+2. Fleet Manager registers a vehicle and ensures the driver profile is available.
+3. Fleet Manager creates a **Draft** trip by choosing an available vehicle and eligible driver.
+4. Dispatch changes the trip to **Dispatched** and vehicle/driver state to **On Trip**.
+5. Driver sees their own assigned trip and may complete it with final odometer/fuel readings.
+6. Completion records trip outcome and updates associated operational data.
+7. Maintenance records put vehicles **In Shop**; closing the work order can return them to
+   **Available**.
+8. Finance and safety dashboards/report endpoints calculate current values from tenant records.
 
-1. Code is merged into `main` on GitHub (GitHub Actions has already built and tested it, including the Docker
-   image).
-2. On Render: **Manual Deploy → Deploy latest commit**. Render downloads the code and runs the `Dockerfile`:
-   - stage 1 (Node): `npm ci` and `npm run build` → the React files;
-   - stage 2 (.NET SDK): `dotnet restore` and `dotnet publish` → the API;
-   - stage 3 (small ASP.NET runtime image): copies the API and puts the React files in `wwwroot`.
-3. Render starts the container with the environment variables (database, JWT key, demo password, Razorpay).
-4. On startup the app connects to Supabase, applies migrations, seeds the demo organization and starts
-   Hangfire; Render checks `/api/health` and switches traffic to the new version.
+The API rechecks eligibility. A client-side selector is helpful but cannot authorize a dispatch.
+The active route panel is a visualization of stored routes; the schema does not store GPS
+coordinates and the app should not be presented as live GPS tracking.
 
-**Free-plan limits to mention honestly:** the service sleeps after 15 minutes without visitors (first visit
-then takes about a minute); Render's free plan blocks SMTP port 587, so email on the live site needs Brevo
-(port 2525) or a paid plan.
+The welcome guide is shown per account using a versioned browser `localStorage` key. That means
+the same account can see it again on a different browser/device. Fleet Manager onboarding stays
+available after vehicle registration and is only marked dismissed from the dashboard switch after
+the organization has at least one trip.
 
-**Viva questions**
+### Realtime demonstration
 
-1. *Why Docker?* – The app runs the same on any machine or cloud; the image contains everything it needs.
-2. *Why one service instead of Vercel for the frontend?* – Same origin: the HttpOnly login cookie and the SignalR
-   WebSocket work without cross-site problems.
-3. *Where are secrets kept?* – .NET User Secrets on laptops, Render environment variables in production;
-   never in GitHub.
-4. *What is a health check?* – A URL (`/api/health`) the host calls to know the app started correctly before
-   sending users to it.
-5. *What is a multi-stage Docker build?* – Separate build images for Node and .NET, then a small final image
-   with only the published output, so the deployed image is smaller and safer.
-6. *What went wrong during deployment and how did you fix it?* – A badly pasted connection string, a JWT key
-   shorter than 32 characters, a typo in the database password, and different demo passwords on the laptop
-   and Render. Each was found from the Render logs and fixed in the environment variables; the app now gives a
-   clearer message for the connection-string case.
-7. *Why does the free plan sleep, and how do you handle it in a demo?* – To save resources; open the site a
-   few minutes early, or ping `/api/health` with a free uptime monitor.
+Socket.IO broadcasts operations such as trip dispatch, vehicle/driver status, maintenance, and
+notifications. Open two browser sessions for the same tenant and observe an event on one session
+arrive on the other without refresh. Do not use two tenants for this demonstration; cross-tenant
+non-delivery is a separate isolation check.
 
----
+## 7. Forms and validation rules
 
-## 6. Demo script (10–12 minutes)
+Validation should exist at the API boundary, even when the browser also provides immediate
+feedback. The following reflects the active implementation; where an API currently relies on
+conversion/defaults rather than a strict schema, that limitation is stated rather than disguised.
 
-1. **Landing page** – explain the product and the three plans.
-2. **Purchase** (if internet is good) – choose a plan, verify email, pay with the Razorpay test card
-   (`5267 3181 8797 5449`, `12/30`, `123`), show the receipt PDF.
-3. **Fleet Manager** (`manager@transitops.com`) – dashboard KPIs; add a vehicle with a wrong number
-   (`ABC-123`) to show validation, then a right one; create a trip and dispatch it.
-4. **Driver** (`driver@transitops.com`) – sees only own trips; complete the trip.
-5. **Safety Officer** (`safety@transitops.com`) – click a safety score to show the breakdown; record an
-   incident; show expired licences.
-6. **Financial Analyst** (`analyst@transitops.com`) – profit, margin, cost/km; download the ledger PDF.
-7. **Org Admin** (`admin@transitops.com`) – create a new Fleet Manager user.
-8. **Show the code** – folder structure, one controller, the safety score formula, the UML diagrams.
-
----
-
-## 7. General viva questions
-
-1. **Why a web app and not a mobile app?** Works on any device with a browser; no installation.
-2. **Why .NET for the backend?** Fast, secure, strongly typed C#, mature libraries (Identity, EF Core,
-   SignalR), good for enterprise apps.
-3. **Why React?** Component-based UI, large ecosystem, efficient updates.
-4. **What is an API?** A set of URLs the frontend calls to read or change data (REST: GET, POST, PUT, DELETE).
-5. **What is REST?** An API style where resources have URLs (`/api/vehicles`) and HTTP verbs say the action.
-6. **What is SaaS / multi-tenancy?** Software rented online; many companies share one app but each sees only
-   its own data.
-7. **What is Clean Architecture?** Layers (Domain, Application, Infrastructure, Api) with dependencies
-   pointing inward, so business rules don't depend on databases or web frameworks.
-8. **How is the app secured?** Hashed passwords, JWT in HttpOnly cookie, role checks on every endpoint, tenant
-   filtering, lockout and rate limiting, payment signature verification, secrets outside the code, HTTPS when
-   deployed.
-9. **What was the hardest part?** For example: preventing double dispatch under concurrent requests, or
-   verifying payments safely.
-10. **What would you add next?** Live GPS tracking, mobile app for drivers, GST tax invoices, pagination for
-    large fleets, server-side logout (token revocation).
-
----
-
-## 8. Glossary
-
-| Word | Simple meaning |
+| Form | Main fields and current rules |
 |---|---|
-| Endpoint | One API URL + action, e.g. `POST /api/trips` |
-| DTO | A simple object used to send data in/out of the API |
-| Entity | A class saved as a database table row |
-| Middleware | Code that runs on every request (security, errors, CORS) |
-| CORS | Browser rule about which websites may call the API |
-| Hash | One-way scramble of a password; can't be reversed |
-| Token | A signed proof that you're logged in |
-| Idempotent | Doing it twice has the same effect as once |
-| Transaction | All-or-nothing group of database changes |
-| Index | Database lookup structure; a *unique* index forbids duplicates |
-| Webhook | Another service calling our API when something happens |
-| CI | Automatic build-and-test on every code change |
-| Container | A packaged app with everything it needs to run |
+| Login | Email is required and must be a valid email address; password is required. Password policy is enforced at account creation, not repeated as a login rule. |
+| Subscription start | Organization name and admin name: at least 2 characters after trim. Email must be valid and is normalized to lowercase. |
+| Email verification | Purchase id/secret required; code must be exactly 6 characters. The code must match the pending session. |
+| Plan/payment | A plan id is required. Razorpay order id, payment id, and signature are required; payment authenticity is checked server-side. |
+| Setup password | At least 8 characters; token required. It is hashed before persistence. |
+| Organization Admin create account | Full name at least 2 characters, valid email, password at least 10 characters, and an allowed non-admin role. For Driver role: Indian phone, valid-format licence, category, and expiry are required. |
+| Organization Admin update account | Valid email; optional new password must be at least 10 characters. Role must map to an allowed operational role. Driver fields are required/validated when the resulting account is a Driver. |
+| Fleet Manager add driver | Name 2–100 characters; valid email (max 256); password 10–128 characters; licence/category/contact fields required; phone/licence normalized; expiry must be a valid date no more than 20 years ahead and not before licence issue year. Expired licences are immediately suspended. |
+| Driver edit/status | Name must be 2–100 characters when supplied; email must be valid; phone/licence/expiry are normalized and checked; an expired licence cannot be reinstated. Role authorization is Fleet Manager or Safety Officer for supported compliance actions. |
+| Vehicle | Registration is required and must match a supported Indian standard/Delhi/BH format with a valid state/UT code; duplicates are checked within the tenant. Name and model are optional; type and region are dropdowns. Browser constraints require capacity ≥100 kg, odometer ≥0, and acquisition cost ≥₹1,000. The API strictly normalizes registration but applies defaults to several numeric/metadata fields rather than enforcing all browser ranges. |
+| Vehicle edit/status | Registration edits use the same normalized format and tenant duplicate check. Numeric values are converted by the API; not every edited numeric field has a strict range schema yet. Retirement is a status change, not physical deletion. |
+| Create trip | Source/destination are required; vehicle and driver selection is required; cargo and planned distance have browser minimum 1. Revenue is required in the UI and must be ≥0. API validation trims source/destination to 1–200 characters, requires IDs, requires finite positive cargo/distance and finite non-negative revenue, then checks tenant ownership, vehicle/driver status, capacity, and current licence. |
+| Complete trip | Final odometer is required and has a browser minimum equal to current odometer; fuel is required, ≥0, and uses 0.5-litre steps. API requires finite non-negative readings and final odometer not below the vehicle's current odometer, then validates trip state/ownership. |
+| Maintenance | Vehicle and service type are selected; cost is required and browser minimum is ₹0; description and technician notes are optional. The vehicle must belong to the tenant. The API coerces numeric cost and defaults a missing value to zero, rather than enforcing all browser ranges. |
+| Close maintenance | Work-order id must exist in the tenant. Optional final cost replaces the estimate; technician notes may be updated. The API marks the work order completed and returns the vehicle to Available when appropriate. |
+| Expense | Vehicle selection is required; category is selected; amount is required and >₹0. Fuel category additionally requires liters >0; fuel type is selected. Date is required by the form; odometer and notes are optional. Vehicle/trip references, when supplied, must belong to the tenant. API currently converts numeric fields and falls back to zero; it does not apply a comprehensive strict field schema. |
+| Incident/suspension | Target driver must belong to tenant; actions are role-protected. An expired licence prevents reinstatement. |
+
+### Indian registration/licence/phone checks
+
+`shared/indianFormats.ts` is used by browser forms and API validation:
+
+- Mobile: accepts a 10-digit Indian number beginning 6–9, optionally with `+91` or `91`, and stores normalized `+91##########`.
+- Standard vehicle registration: state/UT code + RTO digits + series letters + number; Delhi has its supported special pattern.
+- Bharat (BH) registration: supported year range (2021 to current year), four-digit number (not all zeros), and one/two series letters excluding I and O.
+- Driving licence format: 15 characters after separators are removed: state code, two-character RTO segment, issue year, and seven-digit serial; rejects unknown state codes, zero RTO, issue year outside 1950–current year, and all-zero serial. The RTO segment check is a plausibility check, not an official RTO lookup.
+- Licence expiry: must be parseable, not more than 20 years in the future, and not earlier than the issue year encoded in the licence.
+
+Sarathi Parivahan is the Ministry of Road Transport and Highways' online service platform for
+driving-licence-related services such as applications, renewals, and appointments. Requirements can
+depend on the licence class and jurisdiction. TransitOps does not connect to Sarathi or VAHAN and
+does not verify a licence against a government record, ownership, authenticity, or legal eligibility;
+its checks are **format plausibility only**. Explain this clearly in a viva.
+
+### Password rules are not all identical
+
+- Organization Admin-created staff and Fleet Manager-created driver passwords: minimum 10
+  characters; the driver creation schema caps at 128.
+- Subscription setup password: minimum 8 characters.
+- Login accepts the stored account password; it does not create/change password rules.
+- Password hashes use bcryptjs. No plaintext passwords should appear in database fields or logs.
+
+## 8. Metrics and calculations
+
+The detailed definitions live in [ACCESS_AND_KPI.md](./ACCESS_AND_KPI.md). Explain each metric with
+its unit and data source. Do not claim that a displayed score is a government-certified rating.
+
+### Fleet
+
+- Utilization = `On Trip vehicles ÷ non-retired vehicles × 100`, rounded to one decimal place;
+  zero when there are no eligible vehicles.
+- Active trips = trips with status `Dispatched`.
+- Pending departures = trips with status `Draft`.
+- Available, maintenance-hold, and active vehicle counts use the respective stored statuses.
+
+### Financial
+
+- Fuel spend = sum of `Fuel` expense amounts.
+- Maintenance spend = sum of maintenance record costs.
+- Other expenses = expenses whose type is not `Fuel`.
+- OPEX = maintenance + fuel + other expenses.
+- Gross revenue = sum of revenue on completed trips.
+- Net profit = gross revenue − OPEX.
+- Net margin = net profit ÷ gross revenue × 100, rounded to one decimal place; zero when revenue is zero.
+- Cost per km = OPEX ÷ completed trips' planned distance, rounded to two decimals; zero when distance is zero.
+- Per-vehicle ROI = `(revenue − maintenance cost − fuel cost) ÷ acquisition cost × 100`,
+  rounded to an integer. It is explicitly **0% when no revenue has yet been earned** or
+  acquisition cost is zero, so a new vehicle does not show a misleading negative ROI before its
+  first completed/revenue-producing work. The same shared helper powers the dashboard and PDF.
+
+### Driver safety score (0–100)
+
+Start at 100 and apply the following factors; clamp the final score to 0–100:
+
+- Incidents: −8 each, maximum penalty −40.
+- Licence: −25 if expired; −5 if expiring within 30 days.
+- Fuel discipline: evaluate up to 10 most recent completed trips with positive planned distance and
+  fuel data. If fewer than 3 are evaluable, no fuel penalty. Otherwise compare planned distance
+  divided by entered fuel with 85% of the vehicle's rated efficiency; penalty is proportional to the fraction of inefficient trips,
+  up to −15.
+- Experience: +1 for each 25 completed trips, capped at +5.
+
+Score bands: 90–100 Excellent, 75–89 Good, 60–74 Needs attention, below 60 High risk. It is a
+project-defined heuristic, not a validated safety or insurance standard.
+
+The KPI service currently reports `onTimeDepartureRate` as the fixed placeholder `94.5`; the model
+does not record a promised departure timestamp from which a genuine on-time rate could be derived.
+State this limitation if asked.
+
+## 9. Database schema: every model and field
+
+Schema source: [`backend/prisma/schema.prisma`](../backend/prisma/schema.prisma). Most tables have
+`tenantId` and a tenant index so organization-scoped queries can be efficient. Fields such as
+status and role are strings, not Prisma enums. The design currently uses scalar IDs rather than
+formal Prisma relations/foreign keys for most cross-model links.
+
+### `User` — login identity and account
+
+| Field | Purpose |
+|---|---|
+| `id` | Primary key, generated UUID. |
+| `tenantId` | Organization boundary used in API filters. |
+| `email` | Login/contact email; globally unique. |
+| `passwordHash` | bcrypt password hash, never plaintext. |
+| `fullName` | Display name. |
+| `role` | Role string used by backend authorization. |
+| `isDemoAccount` | Identifies a seeded demo identity. |
+| `avatarUrl` | Optional profile image URL. |
+| `driverId` | Optional scalar link to the Driver profile. |
+| `contactNumber` | Optional phone, especially for driver-role accounts. |
+| `licenseNumber`, `licenseCategory`, `licenseExpiryDate` | Optional driver identity/compliance data mirrored from the Driver profile. |
+| `createdAt`, `updatedAt` | Creation and last-update timestamps. |
+
+### `Vehicle` — fleet asset
+
+`id` is the primary key; `tenantId` scopes the organization. `registrationNumber` is the normalized
+plate identifier; `name`, `model`, and `type` are display/classification data. `maxCapacityKg`
+stores rated payload; `currentOdometerKm` stores latest odometer. `acquisitionCost` supports ROI.
+`status` stores Available/On Trip/In Shop/Retired state. `region` supports fleet grouping.
+`revenueGenerated` stores cumulative vehicle revenue; `fuelEfficiencyKmPerLiter` is the rated km/L
+baseline for safety calculations. `documents` is a JSON-encoded string of vehicle document
+metadata. `createdAt`/`updatedAt` record timestamps.
+
+### `Driver` — driver profile/compliance record
+
+`id` primary key; `tenantId` tenant scope; `name`, `email`, `contactNumber` identify the person.
+`licenseNumber`, `licenseCategory`, `licenseExpiryDate` store licence data. `safetyScore` stores
+the calculated 0–100 score; `status` stores availability/suspension. `tripsCount`,
+`totalTripsCompleted`, and `incidentHistoryCount` support operational/safety summaries.
+`identityUserId` links to the login account; `lastLicenseReminderKey` prevents duplicate scheduled
+reminders for the same expiry-date/week bucket. `createdAt`/`updatedAt` are timestamps.
+
+### `Trip` — freight movement
+
+`id` primary key; `tenantId` tenant scope; `tripCode` human-readable reference; `source` and
+`destination` route endpoints. `vehicleId`/`driverId` refer to assigned records. `vehicleRegNumber`,
+`vehicleName`, and `driverName` snapshot display identifiers for historical records. `cargoWeightKg`
+and `plannedDistanceKm` store load and plan; `revenue` stores expected/earned trip revenue.
+`status` is Draft/Dispatched/Completed/Cancelled. `dispatchedAt` and `completedAt` store lifecycle
+timestamps. `finalOdometerKm` and `fuelConsumedLiters` are completion readings. `createdAt` and
+`updatedAt` track record changes.
+
+### `MaintenanceRecord` — repair/service work order
+
+`id` primary key; `tenantId` scope; `vehicleId` and the snapshot fields
+`vehicleRegNumber`/`vehicleName` identify the asset. `serviceType`, `description`, `cost`, and
+`technicianNotes` describe work. `date` and `startDate` record start; `completedDate` and
+`completedAt` record completion. `status` distinguishes active from completed work. Timestamps
+track record creation/update.
+
+### `Expense` — operating expense
+
+`id` primary key; `tenantId` scope; `vehicleId`/`tripId` optional operational references.
+`vehicleRegNumber`/`vehicleName` are optional snapshots. `type` and `category` classify the cost.
+`amount` is the recorded amount; `cost` is a compatibility/duplicate amount field used by some
+frontend calculations. `date` and `expenseDate` are date representations used by existing UI/API
+paths. `liters`/`fuelLiters` store fuel volume; `odometerReading` stores an optional reading.
+`description`/`notes` provide text. `createdAt`/`updatedAt` are timestamps.
+
+### `SubscriptionPlan` — purchasable plan
+
+`id` primary key; `name` display name; `amountPaise` integer price in paise (100 paise = ₹1);
+`currency` ISO currency string (default INR); `termMonths` billing period; `features` JSON encoded
+as a string.
+
+### `PurchaseSession` — temporary subscription/setup workflow
+
+`id` primary key; `purchaseSecret` identifies/authorizes the pending workflow; `organizationName`,
+`fullName`, `email` capture prospective customer/admin. `verificationCode` and `emailVerified`
+represent email verification. `planId`, `orderId`, `paymentId`, and `paymentVerified` represent
+plan/payment progress. `receiptEmailSent` and `setupEmailSent` prevent duplicate sends;
+`setupCompleted` marks account setup completion. `createdAt` records session creation.
+
+## 10. Background work, email, PDF, and external services
+
+| Technology | Why it is present |
+|---|---|
+| `node-cron` | Schedules the driver licence/safety check at the start of every hour in Asia/Kolkata and runs the same check once at server startup. |
+| Nodemailer | Sends SMTP email: subscription, account setup, and licence reminders. |
+| PDFKit | Generates payment receipts, trip receipts, fleet ROI, and ledger PDFs. |
+| Razorpay REST API | Subscription checkout/order/payment verification. Configure live or test credentials; do not treat demo fallback credentials as production settings. |
+| Socket.IO | Pushes tenant-scoped updates to currently connected browser sessions. |
+| Swagger UI | Serves the API description at `/swagger` and `/api-docs`. |
+| PostgreSQL health query | `/api/health` checks database connectivity. |
+
+The hourly job suspends expired-licence drivers, recalculates scores, and sends reminders for
+licences expiring within 30 days. Reminder keys are stored to avoid weekly duplicates for an expiry
+date. Up to five drivers are processed concurrently to reduce serial SMTP delay; a failed send
+restores the prior key so a later run can retry. Driver list retrieval also
+refreshes expiry status/score so an expired licence is not left with a stale score until the next
+cron run. SMTP connection/greeting/socket timeouts bound the wait for a mail server response.
+
+There is no durable job queue in this project. `node-cron` runs inside the web process; if Render
+restarts or multiple web instances run, each instance can schedule work. For a larger production
+deployment, use a single dedicated worker/queue and an idempotent distributed lock.
+
+## 11. Node packages and what each does
+
+Versions and the complete dependency list are in root `package.json`.
+
+### Runtime packages
+
+| Package | Use |
+|---|---|
+| `react`, `react-dom` | Build and mount the browser UI. |
+| `express` | HTTP API and static/Vite middleware host. |
+| `@prisma/client`, `prisma`, `@prisma/adapter-pg`, `pg` | Typed database client, schema/CLI, PostgreSQL adapter, and connection pool. |
+| `bcryptjs` | Password hashing and verification. |
+| `jsonwebtoken` | Sign and verify JWT authentication tokens. |
+| `cookie-parser` | Read the authentication cookie in Express. |
+| `cors` | Configure cross-origin request handling. |
+| `dotenv` | Load environment variables from `.env` for local execution. |
+| `zod` | Runtime request validation for schemas such as login, account, and subscription inputs. |
+| `socket.io`, `socket.io-client` | Realtime server and browser client. |
+| `node-cron` | Scheduled compliance work. |
+| `nodemailer` | SMTP mail sending. |
+| `pdfkit` | PDF document generation. |
+| `csv-stringify` | Escape/format CSV exports. |
+| `swagger-ui-express` | Host interactive API documentation. |
+| `vite`, `@vitejs/plugin-react` | Frontend development/build tooling and React transform. |
+| `@tailwindcss/vite`, `tailwindcss` | Utility CSS integration and styling. |
+| `lucide-react` | Icons. |
+| `recharts` | Charts. |
+| `motion` | UI animation. |
+| `@microsoft/signalr` | Legacy dependency retained in the manifest; Socket.IO is the active realtime transport. |
+
+### Development/type packages
+
+`typescript` type-checks source. `tsx` runs TypeScript entry points in Node. `@types/*` packages
+provide types for dependencies that need them. `autoprefixer` adds browser CSS prefixes.
+`esbuild` is a fast JavaScript bundler used by tooling.
+
+## 12. React hooks: the beginner version
+
+A hook is a React function that lets a function component use state, side effects, context, or
+other React behavior. Hooks must be called at the top level of a React component/custom hook, not
+inside conditions or loops.
+
+| Hook | Meaning | Where it is used |
+|---|---|---|
+| `useState` | Stores UI state and re-renders when it changes. | Forms, open/closed modals, filters, selected tabs, loading/errors, notifications. |
+| `useEffect` | Runs synchronization after render, such as loading data or attaching event listeners. | App session/data loading, view synchronization, modal vehicle selection, toast timers, dashboard KPI loads. |
+| `useMemo` | Reuses a computed value until its dependencies change. | Not currently used in this source; add it only if profiling shows an expensive derived value needs memoization. |
+| `useCallback` | Reuses a function identity until dependencies change. | Context/API actions and effect dependencies, preventing unnecessary resubscription/reload. |
+| `useRef` | Holds a mutable value without causing a render. | Toast timer bookkeeping, socket/client instances, and values that must persist between renders. |
+| `useContext` | Reads a value supplied by a parent Provider. | `useApp()` reads AppContext; `useTheme()` reads ThemeContext. |
+| `useApp`, `useTheme` | Project-defined custom hooks built on `useContext`. | Provide typed access to application data/actions and theme state without importing context internals into each component. |
+| `createContext` | Creates a context container that can be supplied to descendants. | App and theme context definitions. |
+
+The hooks currently used are `useState`, `useEffect`, `useCallback`, `useRef`, and `useContext`.
+`createContext` creates the App/Theme context containers but is not itself a hook. `useMemo` and
+`useReducer` are not currently used. To find a behavior, search for the component and the relevant
+hook rather than assuming every screen works identically.
+
+## 13. Demonstration script (about 8–10 minutes)
+
+Prepare two browser windows in a side-by-side/split-screen layout. Use two accounts in the **same
+demo organization** for realtime. Keep one window as Fleet Manager and the other as Driver or
+Safety Officer. Avoid showing real credentials or secret environment values.
+
+| Time | Demo action | What to explain |
+|---|---|---|
+| 0:00–0:45 | Introduce TransitOps and show the five roles. | The problem: operations, compliance, and finance data should be organization-scoped. |
+| 0:45–1:30 | Sign in as Organization Admin; show staff list and role assignments. | JWT authentication and server-side authorization; admin manages staff, not every fleet operation. |
+| 1:30–2:15 | Open a second window and sign in as Fleet Manager. | Each role gets a different dashboard; both windows belong to the same tenant. |
+| 2:15–3:15 | Create a Draft trip in Fleet Manager; observe it appear for its assigned Driver. | A driver sees assigned trips only; a draft is awaiting dispatch. |
+| 3:15–4:00 | Dispatch the trip; point out the realtime status update in both windows without refresh. | Socket.IO push event, tenant room, UI update; backend revalidates vehicle/driver eligibility. |
+| 4:00–4:45 | Complete the dispatched trip from Driver; enter final odometer/fuel. | The driver cannot complete another driver's trip; readings feed operating/safety information. |
+| 4:45–5:30 | Show capacity warning, an invalid phone/licence/registration, and validation message. | Browser feedback is convenient; server validation is authoritative; Sarathi/VAHAN is not queried. |
+| 5:30–6:15 | Show a vehicle moved In Shop by maintenance and then close the work order. | Maintenance status prevents dispatch until resolved. |
+| 6:15–7:00 | Show licence status/score and explain the expiry penalty/reminder job. | The compliance job runs at startup and hourly in IST; list reads refresh stale expiry state. |
+| 7:00–8:00 | Open reports or ROI PDF; compare it with dashboard. | Shared ROI helper, ₹ currency, PDF export; zero earned revenue is 0% ROI. |
+| 8:00–9:00 | Explain tenant boundary and limitations. | API queries carry tenantId; no GPS coordinates, no government licence lookup, fixed 94.5 on-time placeholder. |
+| 9:00–10:00 | Conclude with deployment architecture and security. | One Render service, PostgreSQL, environment secrets; never expose `.env` or use development/test payment keys in production. |
+
+### Protected-route/isolation demo
+
+For an ethical local demo, log in with one role and try a forbidden API operation using the
+browser's own developer tools or Swagger with that user's session. Show `401` when unauthenticated
+and `403` for an authenticated role without permission. For tenant isolation, create two local test
+organizations and show that a user cannot fetch the other tenant's record by changing an ID. Do not
+test against a third-party system or production customer data.
+
+## 14. Viva questions and beginner-friendly answers
+
+### Product and architecture
+
+1. **What problem does TransitOps solve?**
+   It centralizes fleet assets, drivers, dispatch, maintenance, expenses, compliance, and reporting
+   so each organization works from consistent operational records.
+
+2. **Why is this a web application?**
+   Multiple roles can access the same organization workspace from a browser without separate
+   desktop installations; the backend remains the central authority.
+
+3. **What does SaaS mean here?**
+   Organizations use a hosted service and subscription flow instead of installing and maintaining
+   their own application server.
+
+4. **Why React?**
+   Its component model lets dashboards, forms, and modals be composed and updated independently.
+
+5. **Why TypeScript?**
+   It catches many incorrect property names and data-shape mistakes before runtime and documents
+   the expected domain objects.
+
+6. **Why Express?**
+   It is a small Node.js framework for routing HTTP requests and composing middleware.
+
+7. **Why PostgreSQL?**
+   The data is relational and benefits from durable records, indexing, transactional writes, and
+   a mature managed-hosting ecosystem.
+
+8. **Why Prisma?**
+   It generates a typed client from a schema, makes common queries readable, and provides a
+   consistent way to connect TypeScript code to PostgreSQL.
+
+9. **Is this Clean Architecture?**
+   No. It is feature-module based. Shared services and middleware are separated, but route handlers
+   still contain request-level business logic and Prisma calls. That is a deliberate simplicity
+   tradeoff at this project size, not a claim of strict Clean Architecture.
+
+10. **Should controllers be separated from routes?**
+    Routes define HTTP paths; controllers handle request/response; services hold reusable business
+    rules. The current modules combine the first two because they are feature-local. Extracting a
+    controller is useful when handlers become long, reused, or difficult to test; adding wrappers to
+    every small endpoint today would add indirection without value.
+
+11. **How does a trip request travel through the system?**
+    React calls the API service; Express middleware authenticates and authorizes; the route checks
+    tenant and business rules; Prisma writes PostgreSQL; the route responds and emits a Socket.IO
+    event; React updates state.
+
+12. **Where does production serve the frontend?**
+    Express serves the Vite build from `dist` and mounts API routes on the same origin.
+
+### Authentication, authorization, and data safety
+
+13. **What is authentication?**
+    Checking identity. The login endpoint verifies the password hash and issues a JWT.
+
+14. **What is authorization?**
+    Checking permission after identity is known. `requireRole` enforces roles on the API.
+
+15. **What is a JWT?**
+    A signed token containing claims. The server verifies its signature and expiry; the payload is
+    not encrypted and must not contain secrets.
+
+16. **Where is the JWT stored?**
+    In an HttpOnly cookie named `transitops_jwt`; the API can also accept a bearer token.
+
+17. **Why hash passwords?**
+    If a database copy is exposed, a salted one-way hash does not directly reveal users' passwords.
+    TransitOps uses bcryptjs and never needs to decrypt the stored hash.
+
+18. **How are organizations isolated?**
+    A verified JWT carries tenantId; every protected resource query is filtered by that tenant, and
+    realtime events are emitted to tenant rooms.
+
+19. **Is hiding a button enough for security?**
+    No. UI visibility is not an authorization boundary. The server verifies role and tenant on each
+    protected operation.
+
+20. **Can one driver see all trips?**
+    No. The backend resolves the user's linked Driver record and filters trip reads/completion/PDF
+    access to that driver ID.
+
+21. **What is a 401 vs a 403?**
+    `401` means no valid authentication; `403` means authenticated but not allowed for that action.
+
+22. **Are all relationships database foreign keys?**
+    No. Many cross-model references are scalar IDs, so API validation and tenant-scoped queries
+    must check linked records. This is a known area for future schema hardening.
+
+### Operations, metrics, and compliance
+
+23. **What is a Draft trip?**
+    A planned trip awaiting dispatch. It is visible to the assigned driver as awaiting dispatch.
+
+24. **What changes on dispatch?**
+    Trip becomes Dispatched; associated vehicle and driver become On Trip; a realtime update is sent.
+
+25. **What prevents an unavailable vehicle from being dispatched?**
+    Server-side checks require an available vehicle, eligible driver, valid licence, and valid trip
+    state. The browser filter alone is not trusted.
+
+26. **Why record final odometer and fuel?**
+    To preserve completion readings and support operational cost/safety analysis.
+
+27. **How does maintenance affect dispatch?**
+    An active maintenance action puts a vehicle In Shop, removing it from dispatch eligibility.
+
+28. **How is ROI calculated?**
+    `(revenue − maintenance − fuel) / acquisition cost × 100`; zero when no revenue has yet been
+    earned or acquisition cost is zero. Dashboard and fleet ROI PDF share the same helper.
+
+29. **What is fleet utilization?**
+    On-trip vehicles divided by non-retired vehicles, multiplied by 100.
+
+30. **How is the safety score calculated?**
+    It starts at 100 and applies incident, licence, fuel-discipline, and experience factors, then
+    clamps to 0–100. The factors are heuristics defined by the project.
+
+31. **What happens when a licence expires?**
+    The driver is suspended and receives the expiry score penalty. The background job checks hourly
+    and at startup; driver list reads also refresh status and score.
+
+32. **Does the application validate a licence with Sarathi?**
+    No. It checks Indian-format plausibility and date consistency only. There is no live Sarathi or
+    VAHAN API integration.
+
+33. **Does the route radar show live GPS?**
+    No. It displays saved trip route data; there are no persisted live latitude/longitude coordinates.
+
+34. **Is the on-time rate calculated from real trip timestamps?**
+    Not yet. The KPI currently has a fixed 94.5 placeholder; the schema lacks a promised departure
+    time needed for a real calculation.
+
+### Database and implementation
+
+35. **Why does every business record have tenantId?**
+    To associate it with an organization and make tenant-scoped queries explicit.
+
+36. **Why store snapshot names/registration on trips?**
+    To retain readable historical trip information if a vehicle or driver display name changes.
+
+37. **Why are monetary values floats?**
+    The current academic implementation uses Float fields for operational amounts. A production
+    accounting system should prefer integer minor units or fixed-precision Decimal and apply
+    currency/rounding policies consistently.
+
+38. **What is an index?**
+    A database structure that speeds selected lookups. Tenant indexes support common organization
+    filters but add write/storage overhead.
+
+39. **What does Prisma schema do?**
+    It declares models, columns, defaults, and indexes used to generate the typed client and manage
+    schema pushes.
+
+40. **What is a transaction?**
+    A group of database changes that succeed or fail together. Account/profile creation uses a
+    transaction to avoid creating only half of a driver account.
+
+41. **Why does User.email have global uniqueness?**
+    Email is a global login identity in this schema. Vehicle/licence duplicate checks are tenant
+    scoped; another tenant cannot use the same login email.
+
+42. **What is the difference between `amount` and `cost` on Expense?**
+    They are compatibility fields that currently duplicate the same value in the create route.
+    A cleanup migration could consolidate them after checking legacy data.
+
+### Packages, deployment, and testing
+
+43. **Why use node-cron?**
+    It schedules the recurring compliance routine inside Node; it is simple for a single-instance
+    academic deployment but is not a durable distributed queue.
+
+44. **Why use Nodemailer?**
+    It provides a standard Node SMTP transport for setup, receipt, and reminder messages.
+
+45. **Why PDFKit?**
+    It creates downloadable PDF receipts and operational/financial reports on the server.
+
+46. **Why Socket.IO?**
+    It provides a persistent realtime connection and event delivery to connected clients.
+
+47. **Why use an HttpOnly cookie instead of localStorage for JWT?**
+    JavaScript cannot directly read an HttpOnly cookie, reducing token theft through ordinary
+    script access; cookie security flags and CSRF controls still matter in production.
+
+48. **What is CORS?**
+    Browser policy controlling whether a page on one origin may call another. Configure allowed
+    origins deliberately in production.
+
+49. **What should be secret in Render?**
+    Database URL, JWT secret, SMTP credentials, Razorpay keys, and any API secret. Configure them as
+    environment variables, never commit them.
+
+50. **What does `/api/health` test?**
+    It runs a simple database query and reports healthy/unavailable; it is a connectivity check,
+    not a full end-to-end business test.
+
+51. **What does `npm run lint` do here?**
+    It runs TypeScript type-checking (`tsc --noEmit`), not necessarily ESLint.
+
+52. **What does `npm run build` do?**
+    It builds the frontend bundle with Vite. It does not prove that the configured production
+    database, SMTP, or payment provider is reachable.
+
+53. **Why not run `prisma db push` against production during a demo?**
+    It changes the schema. Review the migration/schema impact, back up important data, and use the
+    approved deployment procedure.
+
+54. **What is the biggest current production scaling concern?**
+    The cron job runs inside the web process and may run on every instance; use a single worker or
+    distributed scheduler/lock before horizontal scaling.
+
+55. **What is one important future improvement?**
+    Add strict server-side Zod schemas for every operational form, relational foreign keys and
+    composite tenant constraints, monetary Decimal/minor units, tests, and a durable job queue.
+
+## 15. A short answer if you forget everything
+
+> “TransitOps is a multi-tenant React and Node.js application for fleet operations. React provides
+> role-specific screens; Express authenticates JWTs, checks roles and tenant ownership, and accesses
+> PostgreSQL through Prisma. It manages vehicles, drivers, trips, maintenance, expenses, and
+> compliance. Socket.IO updates connected same-organization screens, node-cron checks licence
+> expiry, Nodemailer sends mail, and PDFKit generates reports. The Indian licence/registration
+> rules are format checks only, not a live government verification.”

@@ -28,8 +28,8 @@ Razorpay requires URLs in two distinct places:
 | Scenario | Recommended Approach | URL to Provide to Razorpay |
 |---|---|---|
 | **Testing Standard Modal Checkout** | **No ngrok or deployment needed!** Test locally on `http://localhost:3000`. Razorpay's frontend checkout modal communicates via the browser, which talks directly to your local backend at `/api/onboarding/verify-payment`. | `http://localhost:3000` (or leave as test URL) |
-| **Testing Server-Side Webhooks locally** | **Use ngrok (or cloudflared / Localtunnel)**. Run `ngrok http 3000` to create a secure HTTPS tunnel to your machine. | `https://<your-subdomain>.ngrok-free.app/api/onboarding/webhook` |
-| **Production / Client Demo** | **Deploy to cloud** (Render, Cloud Run, Railway, or VPS). | `https://your-production-app.com/api/onboarding/webhook` |
+| **Testing Server-Side Webhooks locally** | **Use ngrok (or cloudflared / Localtunnel)**. Run `ngrok http 3000` to create a secure HTTPS tunnel to your machine. | `https://<your-subdomain>.ngrok-free.app/api/onboarding/webhook/razorpay` |
+| **Production / Client Demo** | **Deploy to cloud** (Render, Cloud Run, Railway, or VPS). | `https://your-production-app.com/api/onboarding/webhook/razorpay` |
 
 #### How to test with ngrok:
 1. Start TransitOps: `npm run dev` (running on port 3000).
@@ -39,8 +39,8 @@ Razorpay requires URLs in two distinct places:
    ```
 3. Copy the Forwarding URL (e.g., `https://a1b2-c3d4.ngrok-free.app`).
 4. In your [Razorpay Dashboard](https://dashboard.razorpay.com/) (Test Mode) -> **Settings** -> **Webhooks** -> **Add New Webhook**:
-   - **Webhook URL:** `https://a1b2-c3d4.ngrok-free.app/api/onboarding/webhook`
-   - **Secret:** Enter a secret (e.g. `transitops_webhook_secret_2026`) and add it to `.env` as `RAZORPAY_WEBHOOK_SECRET`.
+   - **Webhook URL:** `https://a1b2-c3d4.ngrok-free.app/api/onboarding/webhook/razorpay`
+   - **Secret:** Generate a unique secret and set the same value as `RAZORPAY_WEBHOOK_SECRET` in `.env`.
    - **Alert Email:** Your email.
    - **Active Events:** Select `payment.captured`, `order.paid`.
 
@@ -168,9 +168,36 @@ For the current local setup:
 - Interactive Swagger UI: [http://localhost:3000/swagger](http://localhost:3000/swagger)
 - Raw OpenAPI JSON: [http://localhost:3000/api/docs/swagger.json](http://localhost:3000/api/docs/swagger.json)
 
+`npm run dev` starts Express and Vite together on port 3000; API calls are served by that same
+process. Do not start a second Vite server against the same port. If you intentionally run Vite
+separately on port 5173, its `/api` proxy targets `http://127.0.0.1:3000` by default; set
+`VITE_BACKEND_URL` only when your API listens on a different address.
+
+## 4. SMTP mail delivery
+
+Set the SMTP variables in the repository-root `.env` for local development and in Render's
+Environment dashboard for deployment:
+
+```env
+SMTP_HOST=smtp.your-provider.example
+SMTP_PORT=587
+SMTP_USER=your-provider-username
+SMTP_PASS=your-provider-password-or-app-password
+SMTP_FROM="TransitOps <no-reply@your-verified-domain.example>"
+```
+
+Port `465` uses implicit TLS; ports such as `587` use STARTTLS. Use the exact host, port, account,
+and sender-domain settings from your email provider. Verify the sender domain and check that the
+provider/hosting plan permits outbound SMTP before production; credentials must not be committed
+to source control. The local default `localhost:1025` is for a local mail catcher only.
+
+The Indian phone, driving-licence, and vehicle-registration checks validate format and plausible
+date/state codes only. They do not query or certify a licence/registration against Sarathi, VAHAN,
+or an RTO; official verification requires an authorized government integration.
+
 ---
 
-## 4. Pre-configured Demo Accounts
+## 5. Pre-configured Demo Accounts
 
 Demo accounts are seeded only when `DEMO_ACCOUNT_PASSWORD` is configured in `.env`. All demo
 accounts use that exact password; there is no hard-coded fallback.
@@ -185,7 +212,7 @@ accounts use that exact password; there is no hard-coded fallback.
 
 ---
 
-## 5. Environment Variables Reference
+## 6. Environment Variables Reference
 
 | Variable | Description | Example / Default |
 |---|---|---|
@@ -206,14 +233,21 @@ accounts use that exact password; there is no hard-coded fallback.
 
 ---
 
-## 6. Render deployment
+## 7. Render deployment
 
 Create a Render Blueprint using the repository's `render.yaml`. This deploys a single Node web
 service; the build creates the frontend bundle and Prisma Client, and the Express backend serves
 both the API and frontend. Configure the prompted environment variables in Render. Use a PostgreSQL
-service for `DATABASE_URL`, a random `JWT_SECRET` of at least 32 characters, and production SMTP and
-Razorpay credentials for email and live payments. Set `APP_BASE_URL` to the public Render URL.
+service for `DATABASE_URL`, a random `JWT_SECRET` of at least 32 characters, production SMTP
+credentials, and the correct Razorpay test/live key pair. Set `APP_BASE_URL` to the public HTTPS
+Render URL.
 
 The Render health check calls `/api/health`, which verifies database connectivity. Apply schema
 changes deliberately with `npm run db:push` against the intended production database; the deploy
-build itself does not mutate the database schema.
+build itself does not mutate the database schema. Recent schema changes include the driver reminder
+deduplication field, so push reviewed schema changes before deploying code that reads them.
+
+In the Razorpay dashboard, configure the production webhook as
+`https://<your-render-service>.onrender.com/api/onboarding/webhook/razorpay` and set its secret to
+the Render `RAZORPAY_WEBHOOK_SECRET` value. Ngrok is only for local webhook testing; it is not
+required after deployment and must not be used as the production webhook URL.

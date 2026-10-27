@@ -17,15 +17,15 @@ flowchart TD
     F -- Yes --> G[Trip saved as Draft]
     G --> H{FM action}
     H -- Cancel --> Z1[Trip Cancelled] --> E1([End])
-    H -- Dispatch --> I[Re-check all rules in<br/>serializable transaction]
+    H -- Dispatch --> I[Re-check eligibility<br/>before state updates]
     I -- fails --> X4[Reject, nothing changed] --> H
-    I -- passes --> J[Trip Dispatched<br/>Vehicle OnTrip, Driver OnTrip<br/>SignalR broadcast]
+    I -- passes --> J[Trip Dispatched<br/>Vehicle On Trip, Driver On Trip<br/>Socket.IO broadcast]
     J --> K{Outcome}
     K -- Cancel --> L[Trip Cancelled<br/>release vehicle & driver] --> E1
     K -- Delivered --> M[Driver/FM enters final odometer + fuel]
-    M --> N{Odometer > previous?}
+    M --> N{Odometer ≥ previous?}
     N -- No --> M
-    N -- Yes --> O[Trip Completed<br/>Vehicle Available, Driver Available<br/>fuel expense recorded, revenue added]
+    N -- Yes --> O[Trip Completed<br/>Vehicle Available, Driver Available<br/>readings saved, revenue added]
     O --> P[KPIs & reports update] --> E1
 ```
 
@@ -65,5 +65,5 @@ flowchart TD
     D -- No --> F[Review maintenance records]
     E --> F
     F --> G([End])
-    H([Hangfire 02:00 UTC]) --> I[Auto-suspend drivers<br/>with expired licences] --> A
+    H([node-cron startup + hourly Asia/Kolkata]) --> I[Auto-suspend expired licences<br/>and recalculate safety score] --> A
 ```

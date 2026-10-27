@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../db';
 import { realtimeEmitter } from '../../realtime';
-import { requireAuth } from '../../middleware/auth';
+import { requireAuth, requireRole } from '../../middleware/auth';
 
 export const expensesRouter = Router();
 expensesRouter.use(requireAuth);
 
-expensesRouter.get('/', async (req: Request, res: Response) => {
+expensesRouter.get('/', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const expenses = await prisma.expense.findMany({
     where: { tenantId: req.user!.tenantId },
     orderBy: { createdAt: 'desc' },
@@ -14,7 +14,7 @@ expensesRouter.get('/', async (req: Request, res: Response) => {
   return res.json(expenses);
 });
 
-expensesRouter.post('/', async (req: Request, res: Response) => {
+expensesRouter.post('/', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const data = req.body;
   const tenantId = req.user!.tenantId;
   const vehicle = await prisma.vehicle.findFirst({ where: { id: data.vehicleId, tenantId } });
@@ -49,7 +49,7 @@ expensesRouter.post('/', async (req: Request, res: Response) => {
   return res.status(201).json(newExpense);
 });
 
-expensesRouter.delete('/:id', async (req: Request, res: Response) => {
+expensesRouter.delete('/:id', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const { id } = req.params;
   const result = await prisma.expense.deleteMany({ where: { id, tenantId: req.user!.tenantId } });
   if (result.count === 0) return res.status(404).json({ detail: 'Expense not found.' });

@@ -41,11 +41,11 @@ export function getIO(): SocketIOServer | null {
 export const realtimeEmitter = {
   tripDispatched: (trip: any) => {
     if (!io || !trip.tenantId) return;
-    io.to(trip.tenantId).emit('trip_dispatched', trip);
+    io.to(trip.tenantId).emit('trip_dispatched', { tenantId: trip.tenantId });
   },
   tripCompleted: (trip: any) => {
     if (!io || !trip.tenantId) return;
-    io.to(trip.tenantId).emit('trip_completed', trip);
+    io.to(trip.tenantId).emit('trip_completed', { tenantId: trip.tenantId });
   },
   vehicleStatus: (vehicleId: string, status: string, tenantId: string) => {
     if (!io || !tenantId) return;
@@ -57,11 +57,11 @@ export const realtimeEmitter = {
   },
   maintenanceUpdated: (record: any) => {
     if (!io || !record.tenantId) return;
-    io.to(record.tenantId).emit('maintenance_updated', record);
+    io.to(record.tenantId).emit('maintenance_updated', { tenantId: record.tenantId });
   },
   expenseUpdated: (expense: any) => {
     if (!io || !expense.tenantId) return;
-    io.to(expense.tenantId).emit('expense_updated', expense);
+    io.to(expense.tenantId).emit('expense_updated', { tenantId: expense.tenantId });
   },
   notification: (notif: { type: string; title: string; message: string; tenantId?: string; userId?: string }) => {
     if (!io || !notif.tenantId) return;

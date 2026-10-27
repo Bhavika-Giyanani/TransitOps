@@ -17,8 +17,8 @@ export default defineConfig(() => {
       },
     },
     server: {
-      port: 3000,
-      host: 'localhost',
+      port: 5173,
+      host: '127.0.0.1',
       allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       hmr: process.env.DISABLE_HMR !== 'true',
@@ -26,18 +26,18 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
         '/api': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
+          target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:3000',
           changeOrigin: true,
           secure: false,
         },
         '/hubs': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
+          target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:3000',
           changeOrigin: true,
           ws: true,
           secure: false,
         },
         '/swagger': {
-          target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
+          target: process.env.VITE_BACKEND_URL || 'http://127.0.0.1:3000',
           changeOrigin: true,
           secure: false,
         },

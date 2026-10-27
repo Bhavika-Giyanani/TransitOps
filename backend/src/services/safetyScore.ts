@@ -1,10 +1,10 @@
 import { prisma } from '../db';
+import { getIndianDateString } from '../utils/indianDate';
 
 export async function calculateDriverSafetyScore(tenantId: string, driverId: string) {
   const driver = await prisma.driver.findFirst({ where: { id: driverId, tenantId } });
   if (!driver) throw new Error('Driver not found');
 
-  const today = new Date();
   const factors: { factor: string; points: number; detail: string }[] = [];
 
   // 1. Incidents: -8 per incident, capped at -40
@@ -19,8 +19,9 @@ export async function calculateDriverSafetyScore(tenantId: string, driverId: str
   });
 
   // 2. Licence validity: -25 if expired, -5 if expires within 30 days
-  const expiryDate = new Date(driver.licenseExpiryDate);
-  const diffDays = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 3600 * 24));
+  const expiryDate = Date.parse(`${driver.licenseExpiryDate}T00:00:00Z`);
+  const today = Date.parse(`${getIndianDateString()}T00:00:00Z`);
+  const diffDays = Math.ceil((expiryDate - today) / 86_400_000);
   let licencePoints = 0;
   let licenceDetail = 'Licence valid';
   if (diffDays < 0) {
@@ -50,7 +51,7 @@ export async function calculateDriverSafetyScore(tenantId: string, driverId: str
   let fuelPoints = 0;
   let fuelDetail = '';
   if (evaluated.length < 3) {
-    fuelDetail = `Not enough trips with fuel data in the last 90 days (${evaluated.length}/3)`;
+    fuelDetail = `Not enough completed trips with fuel data (${evaluated.length}/3)`;
   } else {
     let inefficientCount = 0;
     for (const t of evaluated) {

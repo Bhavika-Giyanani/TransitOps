@@ -1,205 +1,109 @@
-# 6. Sequence Diagrams
+# 6. Current Sequence Diagrams
 
-## 6.1 Login (JWT in HttpOnly cookie)
+These diagrams follow the current React, Express, JWT, Prisma, Socket.IO, Nodemailer, PDFKit, and
+node-cron implementation.
+
+## 6.1 Login and authenticated request
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor U as User
-    participant FE as React SPA
-    participant API as AuthController
-    participant ID as ASP.NET Identity
-    participant DB as PostgreSQL
-
-    U->>FE: Enter email + password
-    FE->>API: POST /api/auth/login
-    Note over API: rate limit policy "auth" (per IP)
-    API->>ID: CheckPasswordSignInAsync(lockoutOnFailure)
-    ID->>DB: find user, verify hash
-    alt valid
-        ID-->>API: Succeeded
-        API->>API: build JWT (sub, role, tenant_id), 30 min
-        API-->>FE: 200 + Set-Cookie transitops_access (HttpOnly, SameSite)
-        FE->>API: GET /api/auth/me
-        API-->>FE: user profile + role
-        FE->>FE: route to role dashboard, open SignalR
-    else invalid / locked (5 fails → 15 min)
-        API-->>FE: 401 generic "Invalid credentials"
-    end
+  actor User
+  participant UI as React UI
+  participant API as Express API
+  participant Auth as Auth middleware
+  participant DB as PostgreSQL via Prisma
+  User->>UI: Enter email and password
+  UI->>API: POST /api/auth/login
+  API->>DB: Find user by email
+  DB-->>API: User + passwordHash + role + tenantId
+  API->>API: bcrypt compare, sign JWT
+  API-->>UI: HttpOnly transitops_jwt cookie + profile
+  User->>UI: Open protected screen
+  UI->>API: Request with cookie
+  API->>Auth: Verify JWT
+  Auth->>Auth: requireRole check when route requires it
+  API->>DB: Query scoped by authenticated tenantId
+  DB-->>UI: Tenant-authorized result
 ```
 
-## 6.2 Create and dispatch a trip
+## 6.2 Draft, dispatch, and driver completion
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor FM as Fleet Manager
-    participant FE as React SPA
-    participant T as TripsController
-    participant V as FluentValidation
-    participant DB as PostgreSQL
-    participant H as TransitOpsHub
-    actor OTHERS as Other users in tenant
-
-    FM->>FE: Fill Create Trip form
-    FE->>T: POST /api/trips
-    T->>V: Validate CreateTripRequest
-    T->>DB: load Vehicle + Driver (same tenant)
-    alt cargo > capacity / driver grounded / vehicle not Available
-        T-->>FE: 400 / 422 with reason
-    else ok
-        T->>DB: INSERT Trip (Draft)
-        T-->>FE: 201 Created
-    end
-
-    FM->>FE: Click Dispatch
-    FE->>T: POST /api/trips/{id}/dispatch
-    T->>DB: BEGIN (Serializable)
-    T->>DB: reload trip + vehicle + driver
-    T->>T: re-check licence, status, capacity
-    T->>DB: Trip=Dispatched, Vehicle=OnTrip, Driver=OnTrip
-    T->>DB: COMMIT
-    T->>H: ReceiveTripDispatched → group tenant_{id}
-    H-->>OTHERS: live update
-    T-->>FE: 200 trip
+  actor FM as Fleet Manager
+  actor Driver
+  participant UI as React clients
+  participant API as Express trip routes
+  participant DB as PostgreSQL via Prisma
+  participant Socket as Socket.IO
+  FM->>UI: Create trip draft
+  UI->>API: POST /api/trips
+  API->>API: Authenticate, check Fleet Manager
+  API->>DB: Validate tenant vehicle/driver and save Draft
+  DB-->>API: Draft trip
+  API-->>UI: 201 trip response
+  FM->>UI: Dispatch trip
+  UI->>API: POST /api/trips/{id}/dispatch
+  API->>DB: Recheck trip, vehicle, driver and licence
+  API->>DB: Update trip/vehicle/driver states
+  API->>Socket: Emit tenant-scoped status/event
+  Socket-->>UI: Update connected same-tenant clients
+  Driver->>UI: Complete assigned trip
+  UI->>API: POST completion action
+  API->>DB: Check linked driver owns dispatched trip; save readings
+  API-->>UI: Updated trip
 ```
 
-## 6.3 Complete a trip (Driver or Fleet Manager)
+## 6.3 Subscription and account setup
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor D as Driver
-    participant FE as React SPA
-    participant T as TripsController
-    participant DB as PostgreSQL
-    participant H as TransitOpsHub
-
-    D->>FE: Enter final odometer + fuel litres
-    FE->>T: POST /api/trips/{id}/complete
-    T->>DB: BEGIN (Serializable), load trip
-    alt Driver not linked to this trip
-        T-->>FE: 403 Forbidden
-    else trip not Dispatched / odometer ≤ current
-        T-->>FE: 400
-    else ok
-        T->>DB: Trip=Completed, odometer, fuel
-        T->>DB: Vehicle=Available, odometer, revenue += trip.revenue
-        T->>DB: Driver=Available, TotalTripsCompleted++
-        T->>DB: INSERT Fuel expense (litres × ₹105)
-        T->>DB: recalculate driver safety score
-        T->>DB: COMMIT
-        T->>H: ReceiveTripCompleted
-        T-->>FE: 200
-    end
+  actor Admin
+  participant UI as React onboarding
+  participant API as Express onboarding routes
+  participant DB as PostgreSQL via Prisma
+  participant Mail as Nodemailer SMTP
+  participant Pay as Razorpay
+  Admin->>UI: Organization, name, email, plan
+  UI->>API: Begin and request verification
+  API->>DB: Create PurchaseSession
+  API->>Mail: Send verification code
+  Admin->>UI: Submit email code
+  UI->>API: Verify code
+  API->>DB: Mark email verified
+  UI->>API: Create payment order
+  API->>Pay: Create order
+  Pay-->>API: Order id
+  Admin->>Pay: Complete checkout
+  Pay-->>UI: Payment details/signature
+  UI->>API: Verify payment signature
+  API->>DB: Mark payment verified
+  API->>Mail: Send receipt and one-time setup link
+  Admin->>UI: Set initial password
+  UI->>API: Complete account setup
+  API->>DB: Create organization admin with password hash
 ```
 
-## 6.4 Maintenance work order
+## 6.4 Licence compliance job
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor FM as Fleet Manager
-    participant M as MaintenanceController
-    participant DB as PostgreSQL
-    participant H as TransitOpsHub
-
-    FM->>M: POST /api/maintenance
-    M->>DB: load vehicle
-    alt OnTrip / Retired / already InShop
-        M-->>FM: 409 Conflict
-    else
-        M->>DB: INSERT record (Active), Vehicle=InShop
-        M->>H: ReceiveMaintenanceUpdated
-        M-->>FM: 201
+  participant Cron as node-cron / server startup
+  participant Job as Driver compliance function
+  participant DB as PostgreSQL via Prisma
+  participant Score as Safety score service
+  participant Mail as Nodemailer SMTP
+  Cron->>Job: Startup run and hourly Asia/Kolkata run
+  Job->>DB: Load driver compliance records
+  loop Each driver
+    Job->>DB: Suspend when licence expired
+    Job->>Score: Recalculate score
+    Score->>DB: Read recent completed trips/vehicle ratings
+    Score->>DB: Persist changed score
+    opt Licence expires within 30 days and reminder not sent for bucket
+      Job->>DB: Claim reminder key
+      Job->>Mail: Send renewal reminder
+      Mail-->>Job: Success or error
     end
-    FM->>M: POST /api/maintenance/{id}/close
-    M->>DB: record=Completed, final cost
-    M->>DB: any other Active record for vehicle?
-    alt none
-        M->>DB: Vehicle=Available
-    end
-    M->>H: ReceiveMaintenanceUpdated
-    M-->>FM: 200
-```
-
-## 6.5 SaaS purchase → payment → receipt email → admin setup
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor P as Purchaser
-    participant FE as React SPA
-    participant O as OnboardingController
-    participant S as SaasOnboardingService
-    participant DB as PostgreSQL
-    participant R as Razorpay
-    participant Q as QuestPDF
-    participant M as Gmail SMTP
-
-    P->>FE: Choose plan, enter org/name/email
-    FE->>O: POST /onboarding/begin
-    O->>S: BeginAsync
-    S->>DB: INSERT SaasPurchase (AwaitingEmailVerification)
-    S->>M: send 6-digit verification code
-    P->>FE: enter code
-    FE->>O: POST /onboarding/verify-email
-    FE->>O: POST /onboarding/orders
-    S->>R: create order (amount from server plan catalog)
-    R-->>S: order_id
-    O-->>FE: order_id + key_id
-    FE->>R: Razorpay Checkout (test card)
-    R-->>FE: payment_id + signature
-    FE->>O: POST /onboarding/verify-payment
-    S->>S: verify HMAC signature
-    S->>R: fetch payment (order, amount, INR, captured)
-    S->>DB: BEGIN: Organization + Subscription, Purchase=Paid, COMMIT
-    S->>Q: SubscriptionReceiptPdf.Generate (A4, IST, amount in words)
-    S->>M: HTML receipt email + PDF attachment
-    S->>M: separate email with 48h setup link
-    R--)O: webhook payment.captured (idempotent via EventId)
-    P->>FE: open setup link, choose password
-    FE->>O: POST /onboarding/complete-account-setup
-    S->>DB: create ApplicationUser role=OrganizationAdmin
-```
-
-## 6.6 Report export (CSV / PDF)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor FA as Financial Analyst
-    participant R as ReportsController
-    participant DB as PostgreSQL
-    participant C as CsvHelperService
-    participant Q as QuestPdfReportService
-
-    FA->>R: GET /api/reports/export/csv/trips
-    R->>DB: trips for tenant (+ financial fields by role)
-    R->>C: write CSV
-    R-->>FA: text/csv file
-    FA->>R: GET /api/reports/export/pdf/ledger
-    R->>DB: completed trips, OPEX, revenue
-    R->>Q: GenerateFinancialLedgerPdf
-    R-->>FA: application/pdf file
-```
-
-## 6.7 Background job: daily licence-expiry check
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant HF as Hangfire server
-    participant J as HangfireJobs
-    participant DB as PostgreSQL
-    HF->>J: CheckExpiringLicensesAsync (Cron.Daily 02:00 UTC)
-    J->>DB: drivers with expiry ≤ today + 30 days
-    loop each driver
-        alt expired and not Suspended
-            J->>DB: Status = Suspended
-        else expiring within 30 days
-            J->>J: log warning
-        end
-    end
-    J->>DB: SaveChanges
+  end
 ```

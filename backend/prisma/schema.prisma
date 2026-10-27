@@ -62,6 +62,7 @@ model Driver {
   incidentHistoryCount Int     @default(0)
   totalTripsCompleted Int      @default(0)
   identityUserId      String?
+  lastLicenseReminderKey String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 

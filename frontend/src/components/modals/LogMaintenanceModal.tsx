@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Wrench, AlertTriangle } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -19,12 +19,21 @@ export const LogMaintenanceModal: React.FC<LogMaintenanceModalProps> = ({
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
-  const [vehicleId, setVehicleId] = useState(defaultVehicleId || (vehicles[0]?.id || ''));
+  const [vehicleId, setVehicleId] = useState('');
   const [serviceType, setServiceType] = useState<MaintenanceRecord['serviceType']>('Brake Inspection');
   const [description, setDescription] = useState('');
   const [cost, setCost] = useState<number>(450);
   const [technicianNotes, setTechnicianNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (defaultVehicleId && vehicles.some((vehicle) => vehicle.id === defaultVehicleId)) {
+      setVehicleId(defaultVehicleId);
+    } else if (!vehicles.some((vehicle) => vehicle.id === vehicleId)) {
+      setVehicleId(vehicles[0]?.id ?? '');
+    }
+  }, [defaultVehicleId, isOpen, vehicleId, vehicles]);
 
   if (!isOpen) return null;
 
@@ -111,6 +120,7 @@ export const LogMaintenanceModal: React.FC<LogMaintenanceModalProps> = ({
                   : 'bg-neutral-50 border-[#ded7ca] focus:border-[#d97706] text-neutral-800'
               }`}
             >
+              <option value="">Select a vehicle</option>
               {vehicles.map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.name} ({v.model}) [{v.registrationNumber}] - Current: {v.status}

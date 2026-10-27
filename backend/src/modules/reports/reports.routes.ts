@@ -3,7 +3,9 @@ import { prisma } from '../../db';
 import { pdfService } from '../../services/pdf';
 import { kpiService } from '../../services/kpi';
 import { stringify } from 'csv-stringify';
-import { requireAuth } from '../../middleware/auth';
+import { requireAuth, requireRole } from '../../middleware/auth';
+import { findDriverForUser } from '../drivers/driverIdentity';
+import { calculateVehicleRoi } from '../../../../shared/vehicleRoi';
 
 export const reportsRouter = Router();
 
@@ -44,7 +46,7 @@ reportsRouter.get('/export/pdf/payment-receipt', async (req: Request, res: Respo
 
 reportsRouter.use(requireAuth);
 
-reportsRouter.get('/export/pdf/ledger', async (req: Request, res: Response) => {
+reportsRouter.get('/export/pdf/ledger', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const tenantId = req.user!.tenantId;
   const expenses = await prisma.expense.findMany({ where: { tenantId }, orderBy: { date: 'desc' } });
   const maintenance = await prisma.maintenanceRecord.findMany({ where: { tenantId }, orderBy: { date: 'desc' } });
@@ -53,23 +55,55 @@ reportsRouter.get('/export/pdf/ledger', async (req: Request, res: Response) => {
   pdfService.generateLedgerPdf(res, expenses, maintenance, kpis);
 });
 
-reportsRouter.get('/export/pdf/fleet-roi', async (req: Request, res: Response) => {
+reportsRouter.get('/export/pdf/fleet-roi', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
+  const tenantId = req.user!.tenantId;
   const vehicles = await prisma.vehicle.findMany({
-    where: { tenantId: req.user!.tenantId },
+    where: { tenantId },
     orderBy: { acquisitionCost: 'desc' },
   });
-  pdfService.generateFleetRoiPdf(res, vehicles);
+  const [maintenanceRecords, expenses] = await Promise.all([
+    prisma.maintenanceRecord.findMany({
+      where: { tenantId },
+      select: { vehicleId: true, cost: true },
+    }),
+    prisma.expense.findMany({
+      where: { tenantId },
+      select: { vehicleId: true, type: true, category: true, amount: true, cost: true },
+    }),
+  ]);
+  const roiVehicles = vehicles.map((vehicle) => {
+    const maintenanceCost = maintenanceRecords
+      .filter((record) => record.vehicleId === vehicle.id)
+      .reduce((sum, record) => sum + record.cost, 0);
+    const fuelCost = expenses
+      .filter((expense) => expense.vehicleId === vehicle.id && (expense.type || expense.category) === 'Fuel')
+      .reduce((sum, expense) => sum + (expense.cost || expense.amount || 0), 0);
+    return {
+      ...vehicle,
+      ...calculateVehicleRoi({
+        acquisitionCost: vehicle.acquisitionCost ?? 0,
+        revenue: vehicle.revenueGenerated ?? 0,
+        maintenanceCost,
+        fuelCost,
+      }),
+    };
+  });
+  pdfService.generateFleetRoiPdf(res, roiVehicles);
 });
 
-reportsRouter.get('/export/pdf/trip/:id', async (req: Request, res: Response) => {
+reportsRouter.get('/export/pdf/trip/:id', requireRole('fleet_manager', 'financial_analyst', 'driver'), async (req: Request, res: Response) => {
   const trip = await prisma.trip.findFirst({
     where: { id: req.params.id, tenantId: req.user!.tenantId },
   });
   if (!trip) return res.status(404).json({ detail: 'Trip not found' });
+  if (req.user!.role === 'driver') {
+    const driver = await findDriverForUser(req.user!.id, req.user!.tenantId);
+    if (!driver || trip.driverId !== driver.id) return res.status(404).json({ detail: 'Trip not found' });
+  }
   pdfService.generateTripReceiptPdf(res, trip);
 });
 
-reportsRouter.get('/export/csv/ledger', async (req: Request, res: Response) => {
+reportsRouter.get('/export/csv/ledger', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const tenantId = req.user!.tenantId;
   const expenses = await prisma.expense.findMany({ where: { tenantId }, orderBy: { date: 'desc' } });
   const maintenance = await prisma.maintenanceRecord.findMany({ where: { tenantId }, orderBy: { date: 'desc' } });
@@ -101,7 +135,7 @@ reportsRouter.get('/export/csv/ledger', async (req: Request, res: Response) => {
   });
 });
 
-reportsRouter.get('/export/csv/fleet-roi', async (req: Request, res: Response) => {
+reportsRouter.get('/export/csv/fleet-roi', requireRole('fleet_manager', 'financial_analyst'), async (req: Request, res: Response) => {
   const vehicles = await prisma.vehicle.findMany({ where: { tenantId: req.user!.tenantId } });
 
   res.setHeader('Content-Type', 'text/csv');

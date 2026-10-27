@@ -33,14 +33,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     refreshData,
   } = useApp();
 
-  const isDemo = currentUser?.isDemoAccount === true;
-
-  const hasFleetData = vehicles.length > 0;
-  // For newly created fresh account, start in Getting Started view unless they already have vehicles
-  const isFreshAccount = !isDemo && userRole !== 'driver' && !hasFleetData;
-  const [activeTab, setActiveTab] = useState<'onboarding' | 'dashboard'>(
-    isFreshAccount ? 'onboarding' : 'dashboard'
+  const onboardingKey = currentUser
+    ? `transitops_onboarding_v2_dismissed_${currentUser.tenantId || 'tenant'}_${currentUser.id}`
+    : '';
+  const [isOnboardingDismissed, setIsOnboardingDismissed] = useState(
+    () => Boolean(onboardingKey && localStorage.getItem(onboardingKey) === 'true'),
   );
+  const shouldShowOnboarding = !isOnboardingDismissed;
+  const [activeTab, setActiveTab] = useState<'onboarding' | 'dashboard'>(
+    shouldShowOnboarding ? 'onboarding' : 'dashboard'
+  );
+  const openDashboard = () => {
+    setActiveTab('dashboard');
+    if (userRole !== 'fleet_manager' || trips.length > 0) {
+      setIsOnboardingDismissed(true);
+      if (onboardingKey) localStorage.setItem(onboardingKey, 'true');
+    }
+  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
@@ -62,8 +71,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
       )}
-      {/* View Switcher for Fresh Accounts */}
-      {isFreshAccount && (
+      {shouldShowOnboarding && (
         <div className="flex items-center justify-between pb-2 border-b border-inherit">
           <div className="flex items-center gap-2">
             <button
@@ -78,7 +86,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span>Getting Started Guide</span>
             </button>
             <button
-              onClick={() => setActiveTab('dashboard')}
+              onClick={openDashboard}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
                 activeTab === 'dashboard'
                   ? 'bg-emerald-600 text-white shadow-sm'
@@ -86,17 +94,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               }`}
             >
               <LayoutDashboard className="w-3.5 h-3.5" />
-              <span>{userRole === 'safety_officer' ? 'Safety Dashboard' : 'Fleet Operations Dashboard'}</span>
+              <span>{userRole === 'safety_officer'
+                ? 'Safety Dashboard'
+                : userRole === 'financial_analyst'
+                  ? 'Financial Dashboard'
+                  : userRole === 'driver'
+                    ? 'Driver Dashboard'
+                    : 'Fleet Operations Dashboard'}</span>
             </button>
           </div>
           <span className="text-xs text-neutral-400 font-mono hidden sm:inline">
-            Production Workspace (Clean State)
+            {isLoadingData ? 'Loading organization workspace…' : `${vehicles.length} fleet asset${vehicles.length === 1 ? '' : 's'} · ${trips.length} trip${trips.length === 1 ? '' : 's'}`}
           </span>
         </div>
       )}
 
-      {/* Render Getting Started Guide when active or when onboarding */}
-      {isFreshAccount && activeTab === 'onboarding' ? (
+      {shouldShowOnboarding && activeTab === 'onboarding' ? (
         <GettingStartedGuide
           onOpenAddVehicleModal={onOpenAddVehicleModal}
           onOpenAddDriverModal={onOpenAddDriverModal}
@@ -104,15 +117,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         />
       ) : (
         <>
-          {/* If fresh account but has vehicles or toggled to dashboard, show compact guide at top if incomplete */}
-          {!isDemo && (vehicles.length === 0 || trips.length === 0) && (
-            <GettingStartedGuide
-              onOpenAddVehicleModal={onOpenAddVehicleModal}
-              onOpenAddDriverModal={onOpenAddDriverModal}
-              onOpenNewTripModal={onOpenNewTripModal}
-            />
-          )}
-
           {userRole === 'fleet_manager' && (
             <FleetManagerDashboard
               onOpenNewTripModal={onOpenNewTripModal}

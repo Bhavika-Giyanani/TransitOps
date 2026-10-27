@@ -1,263 +1,110 @@
-# 3. Class Diagram (Domain model)
+# 3. Current Data Model
 
-Based on `backend/TransitOps.Domain/Entities/Entities.cs` and `Enums/Enums.cs`.
-Every operational entity carries a `TenantId`, so organizations are fully isolated.
-
-```mermaid
-classDiagram
-    direction LR
-
-    class IdentityUser {
-        <<ASP.NET Identity>>
-        +string Id
-        +string Email
-        +string PasswordHash
-    }
-    class ApplicationUser {
-        +string FullName
-        +UserRole Role
-        +string TenantId
-        +bool IsDemoAccount
-        +DateTime CreatedAtUtc
-    }
-    IdentityUser <|-- ApplicationUser
-
-    class Organization {
-        +string TenantId «PK»
-        +string Name
-        +string BillingEmail
-    }
-    class OrganizationSubscription {
-        +Guid Id
-        +string TenantId
-        +string PlanId
-        +long AmountPaise
-        +int TermMonths
-        +DateTimeOffset StartsAtUtc
-        +DateTimeOffset EndsAtUtc
-        +string Status
-        +string RazorpayOrderId
-        +string RazorpayPaymentId
-    }
-    class SaasPurchase {
-        +Guid Id
-        +string OrganizationName
-        +string Email
-        +string PaymentStatus
-        +string? PlanId
-        +long? AmountPaise
-        +string? RazorpayOrderId
-        +string? TenantId
-        +string? SetupTokenHash
-        +DateTimeOffset? ReceiptEmailSentAtUtc
-    }
-    class RazorpayWebhookReceipt {
-        +long Id
-        +string EventId «unique»
-    }
-
-    class Vehicle {
-        +Guid Id
-        +string TenantId
-        +string RegistrationNumber «unique»
-        +string Name
-        +string Model
-        +VehicleType Type
-        +int MaxCapacityKg
-        +int CurrentOdometerKm
-        +decimal AcquisitionCost
-        +VehicleStatus Status
-        +string Region
-        +decimal RevenueGenerated
-    }
-    class VehicleDocument {
-        +Guid Id
-        +string Type
-        +DateTime ExpiryDate
-        +string Status
-    }
-    class Driver {
-        +Guid Id
-        +string TenantId
-        +string? IdentityUserId
-        +string Name
-        +string Email «unique»
-        +string ContactNumber
-        +string LicenseNumber «unique»
-        +string LicenseCategory
-        +DateOnly LicenseExpiryDate
-        +int SafetyScore
-        +DriverStatus Status
-        +int IncidentHistoryCount
-        +int TotalTripsCompleted
-    }
-    class Trip {
-        +Guid Id
-        +string TripCode «unique»
-        +string Source
-        +string Destination
-        +int CargoWeightKg
-        +int PlannedDistanceKm
-        +int? FinalOdometerKm
-        +decimal? FuelConsumedLiters
-        +decimal Revenue
-        +TripStatus Status
-        +DateTime? DispatchedAtUtc
-        +DateTime? CompletedAtUtc
-    }
-    class MaintenanceRecord {
-        +Guid Id
-        +string ServiceType
-        +string Description
-        +decimal Cost
-        +MaintenanceStatus Status
-        +DateTime StartDate
-        +DateTime? CompletedDate
-    }
-    class ExpenseRecord {
-        +Guid Id
-        +ExpenseType Type
-        +decimal Amount
-        +decimal? Liters
-        +int? OdometerReading
-        +DateTime ExpenseDate
-    }
-
-    class UserRole {
-        <<enumeration>>
-        OrganizationAdmin
-        FleetManager
-        Driver
-        SafetyOfficer
-        FinancialAnalyst
-    }
-    class VehicleStatus {
-        <<enumeration>>
-        Available
-        OnTrip
-        InShop
-        Retired
-    }
-    class DriverStatus {
-        <<enumeration>>
-        Available
-        OnDuty
-        OnTrip
-        OffDuty
-        Suspended
-    }
-    class TripStatus {
-        <<enumeration>>
-        Draft
-        Dispatched
-        Completed
-        Cancelled
-    }
-    class MaintenanceStatus {
-        <<enumeration>>
-        Active
-        Completed
-    }
-    class ExpenseType {
-        <<enumeration>>
-        Fuel
-        Toll
-        Maintenance
-        Permit
-        Insurance
-        Other
-    }
-
-    Organization "1" --> "0..*" OrganizationSubscription : has
-    Organization "1" ..> "0..*" ApplicationUser : TenantId
-    SaasPurchase "0..1" ..> "1" Organization : provisions
-    ApplicationUser "0..1" -- "0..1" Driver : IdentityUserId link
-    Vehicle "1" *-- "0..*" VehicleDocument : documents
-    Vehicle "1" --> "0..*" Trip : assigned to
-    Driver "1" --> "0..*" Trip : drives
-    Vehicle "1" --> "0..*" MaintenanceRecord : serviced in
-    Vehicle "0..1" --> "0..*" ExpenseRecord : costs
-    Trip "0..1" --> "0..*" ExpenseRecord : costs
-
-    ApplicationUser ..> UserRole
-    Vehicle ..> VehicleStatus
-    Driver ..> DriverStatus
-    Trip ..> TripStatus
-    MaintenanceRecord ..> MaintenanceStatus
-    ExpenseRecord ..> ExpenseType
-```
-
-## 3.1 Service layer
+The diagram reflects the Prisma models in `backend/prisma/schema.prisma`. IDs that look like
+associations are currently scalar fields; most are not declared Prisma relations or database
+foreign keys. `tenantId` is the application-level organization boundary.
 
 ```mermaid
 classDiagram
-    direction LR
-    class IKpiService {
-        <<interface>>
-        +GetFleetKpis(tenant, filters)
-        +GetDriverKpis(tenant, user)
-        +GetSafetyKpis(tenant)
-        +GetFinancialKpis(tenant)
-    }
-    class ISaasOnboardingService {
-        <<interface>>
-        +BeginAsync()
-        +VerifyEmailAsync()
-        +ResendVerificationAsync()
-        +CreatePaymentOrderAsync()
-        +VerifyPaymentAsync()
-        +HandleWebhookAsync()
-        +RetryEmailsAsync()
-        +GetProgressAsync()
-        +CompleteAccountSetupAsync()
-    }
-    class IPdfReportService {
-        <<interface>>
-        +GenerateFinancialLedgerPdf()
-        +GenerateFleetRoiPdf()
-        +GenerateTripTurnInReceiptPdf()
-    }
-    class IHangfireJobs {
-        <<interface>>
-        +CheckExpiringLicensesAsync()
-        +AuditVehicleMaintenanceSchedulesAsync()
-        +ReconcilePendingTripsAsync()
-        +RecalculateSafetyScoresAsync()
-    }
-    class ITransitOpsClient {
-        <<SignalR client contract>>
-        +ReceiveTripDispatched()
-        +ReceiveTripCompleted()
-        +ReceiveVehicleStatusChanged()
-        +ReceiveDriverStatusChanged()
-        +ReceiveMaintenanceUpdated()
-        +ReceiveExpenseUpdated()
-        +ReceiveNotification()
-    }
-    class ISafetyScoreService {
-        <<interface>>
-        +GetBreakdownAsync(tenant, driverId)
-        +RecalculateAsync(driverId)
-        +RecalculateAllAsync(tenant?)
-    }
-    class SafetyScoreCalculator {
-        <<static>>
-        +Calculate(input, today) SafetyScoreResult
-    }
-    class IndianRegulatoryFormats {
-        <<static>>
-        +TryNormalizeRegistration()
-        +TryNormalizeLicence()
-    }
-    ISafetyScoreService <|.. SafetyScoreService
-    SafetyScoreService --> SafetyScoreCalculator
-    SafetyScoreService --> TransitOpsDbContext
-    IKpiService <|.. KpiService
-    ISaasOnboardingService <|.. SaasOnboardingService
-    IPdfReportService <|.. QuestPdfReportService
-    IHangfireJobs <|.. HangfireJobs
-    TransitOpsHub ..> ITransitOpsClient : Hub~ITransitOpsClient~
-    KpiService --> TransitOpsDbContext
-    SaasOnboardingService --> TransitOpsDbContext
-    HangfireJobs --> TransitOpsDbContext
+  class User {
+    +String id PK
+    +String tenantId
+    +String email UNIQUE
+    +String passwordHash
+    +String fullName
+    +String role
+    +Boolean isDemoAccount
+    +String? driverId
+    +String? contactNumber
+    +String? licenseNumber
+    +String? licenseCategory
+    +String? licenseExpiryDate
+  }
+  class Vehicle {
+    +String id PK
+    +String tenantId
+    +String registrationNumber
+    +String name
+    +String model
+    +String type
+    +Float maxCapacityKg
+    +Float currentOdometerKm
+    +Float? acquisitionCost
+    +String status
+    +Float? revenueGenerated
+  }
+  class Driver {
+    +String id PK
+    +String tenantId
+    +String name
+    +String licenseNumber
+    +String licenseCategory
+    +String licenseExpiryDate
+    +String contactNumber
+    +Float safetyScore
+    +String status
+    +String? identityUserId
+    +String? lastLicenseReminderKey
+  }
+  class Trip {
+    +String id PK
+    +String tenantId
+    +String tripCode
+    +String vehicleId
+    +String driverId
+    +Float cargoWeightKg
+    +Float plannedDistanceKm
+    +Float? revenue
+    +String status
+    +DateTime? dispatchedAt
+    +DateTime? completedAt
+    +Float? finalOdometerKm
+    +Float? fuelConsumedLiters
+  }
+  class MaintenanceRecord {
+    +String id PK
+    +String tenantId
+    +String vehicleId
+    +String serviceType
+    +Float cost
+    +String status
+    +DateTime? completedAt
+  }
+  class Expense {
+    +String id PK
+    +String tenantId
+    +String vehicleId
+    +String? tripId
+    +String type
+    +Float amount
+    +Float? cost
+  }
+  class SubscriptionPlan {
+    +String id PK
+    +String name
+    +Int amountPaise
+    +String currency
+    +Int termMonths
+    +String features
+  }
+  class PurchaseSession {
+    +String id PK
+    +String purchaseSecret
+    +String email
+    +Boolean emailVerified
+    +String? planId
+    +Boolean paymentVerified
+    +Boolean setupCompleted
+  }
+
+  User ..> Driver : driverId / identityUserId scalar link
+  Driver ..> Trip : driverId scalar link
+  Vehicle ..> Trip : vehicleId scalar link
+  Vehicle ..> MaintenanceRecord : vehicleId scalar link
+  Vehicle ..> Expense : vehicleId scalar link
+  Trip ..> Expense : tripId scalar link
+  SubscriptionPlan ..> PurchaseSession : planId scalar link
 ```
+
+For field-by-field explanations, including timestamps and snapshot fields, see the database section
+of [PROJECT_GUIDE.md](../PROJECT_GUIDE.md).

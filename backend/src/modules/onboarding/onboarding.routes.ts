@@ -508,7 +508,7 @@ onboardingRouter.post('/complete-account-setup', async (req: Request, res: Respo
   return res.json({ email: session.email, success: true, message: 'Organization administrator credentials created successfully.' });
 });
 
-onboardingRouter.post('/webhook', async (req: Request, res: Response) => {
+onboardingRouter.post(['/webhook', '/webhook/razorpay'], async (req: Request, res: Response) => {
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers['x-razorpay-signature'] as string | undefined;
   const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;

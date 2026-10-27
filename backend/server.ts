@@ -21,6 +21,7 @@ import { kpiRouter } from './src/modules/kpi/kpi.routes';
 import { reportsRouter } from './src/modules/reports/reports.routes';
 import { adminRouter } from './src/modules/admin/admin.routes';
 import { onboardingRouter } from './src/modules/onboarding/onboarding.routes';
+import { startDriverComplianceJob } from './src/jobs/driverCompliance.job';
 
 const app = express();
 const server = http.createServer(app);
@@ -112,7 +113,7 @@ async function startServer() {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       configFile: path.resolve(process.cwd(), 'frontend/vite.config.ts'),
-      server: { middlewareMode: true, host: 'localhost' },
+      server: { middlewareMode: true, host: '127.0.0.1' },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -126,9 +127,10 @@ async function startServer() {
     }
   }
 
-  server.listen(port, 'localhost', () => {
-    console.log(`[TransitOps Node.js Backend] Listening on http://localhost:${port}`);
-    console.log(`[TransitOps Swagger Docs] Available at http://localhost:${port}/swagger`);
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`[TransitOps Node.js Backend] Listening on port ${port}`);
+    console.log(`[TransitOps Swagger Docs] Available at /swagger`);
+    startDriverComplianceJob();
   });
 }
 

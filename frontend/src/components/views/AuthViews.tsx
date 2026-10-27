@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Truck,
   ArrowRight,
+  ArrowLeft,
   CheckCircle2,
   Lock,
   Mail,
@@ -65,7 +66,7 @@ export const LoginView: React.FC = () => {
       {/* Top Bar */}
       <div className="flex items-center justify-between max-w-7xl mx-auto w-full">
         <button
-          onClick={() => setActiveView('login')}
+          onClick={() => setActiveView('hero')}
           className="flex items-center gap-2 text-xs font-extrabold tracking-wider uppercase"
         >
           <span
@@ -76,26 +77,40 @@ export const LoginView: React.FC = () => {
           <span>TRANSITOPS</span>
         </button>
 
-        <button
-          onClick={toggleTheme}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold ${
-            isDark
-              ? 'bg-[#151921] border-[#252b36] text-neutral-300'
-              : 'bg-white border-[#ded7ca] text-neutral-700'
-          }`}
-        >
-          {isDark ? (
-            <>
-              <Sun className="w-3.5 h-3.5 text-[#ccff00]" />
-              <span>Light</span>
-            </>
-          ) : (
-            <>
-              <Moon className="w-3.5 h-3.5 text-[#d97706]" />
-              <span>Dark</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveView('hero')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold ${
+              isDark
+                ? 'bg-[#151921] border-[#252b36] text-neutral-300 hover:text-white'
+                : 'bg-white border-[#ded7ca] text-neutral-700 hover:text-neutral-900'
+            }`}
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to main</span>
+          </button>
+          <button
+            onClick={toggleTheme}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold ${
+              isDark
+                ? 'bg-[#151921] border-[#252b36] text-neutral-300'
+                : 'bg-white border-[#ded7ca] text-neutral-700'
+            }`}
+          >
+            {isDark ? (
+              <>
+                <Sun className="w-3.5 h-3.5 text-[#ccff00]" />
+                <span>Light</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5 text-[#d97706]" />
+                <span>Dark</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Main Login Split (as depicted in Login.svg) */}

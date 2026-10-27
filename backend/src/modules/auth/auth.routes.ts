@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../../db';
 import { generateJwtToken, extractAuthUser } from '../../middleware/auth';
+import { ensureDriverProfile } from '../drivers/driverAccounts';
 
 export const authRouter = Router();
 
@@ -53,6 +54,12 @@ authRouter.post('/login', async (req: Request, res: Response) => {
     }
   }
 
+  if (!await ensureDriverProfile(user)) {
+    return res.status(409).json({
+      detail: 'Your driver account is missing valid mobile, licence, category, or expiry details. Ask your organization administrator to update your profile.',
+    });
+  }
+
   const tokenPayload = {
     id: user.id,
     email: user.email,
@@ -89,6 +96,11 @@ authRouter.get('/me', async (req: Request, res: Response) => {
 
   if (!dbUser) {
     return res.status(401).json({ detail: 'User account not found.' });
+  }
+  if (!await ensureDriverProfile(dbUser)) {
+    return res.status(409).json({
+      detail: 'Your driver account is missing valid mobile, licence, category, or expiry details. Ask your organization administrator to update your profile.',
+    });
   }
 
   return res.json({

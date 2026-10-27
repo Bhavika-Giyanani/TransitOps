@@ -11,8 +11,11 @@ const transporter = nodemailer.createTransport({
   port,
   secure: port === 465,
   auth: user && pass ? { user, pass } : undefined,
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 30_000,
   tls: {
-    rejectUnauthorized: false,
+    rejectUnauthorized: true,
   },
 });
 
@@ -28,6 +31,8 @@ function escapeHtml(value: string): string {
 
 export const emailService = {
   sendLicenseReminder: async (toEmail: string, driverName: string, expiryDate: string) => {
+    const safeDriverName = escapeHtml(driverName);
+    const safeExpiryDate = escapeHtml(expiryDate);
     try {
       await transporter.sendMail({
         from: `"TransitOps Safety Desk" <${fromEmail}>`,
@@ -40,8 +45,8 @@ export const emailService = {
               <h2 style="color: #ffffff; margin: 0; font-size: 18px; letter-spacing: 1px;">TRANSITOPS <span style="color: #d97706; font-size: 13px;">| SAFETY DESK</span></h2>
             </div>
             <h3 style="color: #d97706; margin-top: 0;">Commercial Licence Renewal Notice</h3>
-            <p>Dear <strong>${driverName}</strong>,</p>
-            <p>Our regulatory compliance telemetry indicates that your commercial driver licence will expire on <strong>${expiryDate}</strong>.</p>
+            <p>Dear <strong>${safeDriverName}</strong>,</p>
+            <p>Your commercial driver licence is scheduled to expire on <strong>${safeExpiryDate}</strong>.</p>
             <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 14px 18px; margin: 20px 0; border-radius: 4px;">
               <p style="margin: 0; color: #92400e; font-weight: 500;">
                 Please complete your licence renewal promptly via the Sarathi Parivahan portal or your local RTO to avoid suspension from active fleet dispatch.

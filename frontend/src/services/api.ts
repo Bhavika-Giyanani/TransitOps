@@ -46,6 +46,10 @@ interface UpdateOrganizationUser {
   licenseExpiryDate?: string;
 }
 
+interface CreateDriverInput extends Omit<Driver, 'id' | 'tripsCount' | 'incidentHistoryCount'> {
+  password: string;
+}
+
 interface AuthUserResponse {
   id: string;
   fullName: string;
@@ -369,7 +373,7 @@ export const api = {
 
   drivers: {
     getAll: async () => (await request<Driver[]>('/drivers')).map(fromApiDriver),
-    create: async (data: any) => fromApiDriver(await request<Driver>('/drivers', {
+    create: async (data: CreateDriverInput) => fromApiDriver(await request<Driver>('/drivers', {
       method: 'POST',
       body: JSON.stringify(data),
     })),

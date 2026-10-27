@@ -1,62 +1,35 @@
-# Test report: checklist (test.md), 20 Oct 2026
+# TransitOps Validation Record
 
-Run against a fresh, empty PostgreSQL database with the Development seed, using `tests/api/checklist.py`
-(see `tests/api/README.md`), plus manual browser checks. The shared Supabase database was not touched.
+This record lists checks actually run for the current source changes. It is not a claim that the
+live database, SMTP provider, Razorpay account, or Render deployment was exercised.
 
-**Result: 199 automated checks passed, 0 failed.** 68 unit tests pass. 4 notes, 7 manual checks.
-
-| Section | Automated | Notes |
+| Check | Result | Notes |
 |---|---|---|
-| 1.1 Registration / user provisioning | 15 pass | Public sign-up is disabled by design; Organization Admin creates users |
-| 1.2 Login, session, brute force | 19 pass | 2 notes (below) |
-| 2 Role-based access control | 28 pass | 13 endpoints × 5 roles, field redaction, driver trip scoping |
-| 3 Dashboard KPIs | 7 pass | 1 note |
-| 4 Vehicles | 17 pass | 1 note |
-| 5 Drivers | 10 pass | |
-| 6 Trips (create, dispatch, complete, cancel) | 38 pass | Includes concurrent dispatch |
-| 7 Maintenance | 14 pass | |
-| 8 Fuel, expenses, cost KPIs | 15 pass | |
-| 9 Reports and exports | 8 pass | CSV escaping, three PDF exports |
-| 10 Search and filtering | 4 pass | |
-| 11 Database integrity | 7 pass | Indexes, foreign keys, money precision, empty-database start |
-| 12 API errors and CORS | 7 pass | |
-| 14 Demo accounts and seed consistency | 9 pass | |
-| 15 Fresh account | covered by 1, 4–7 | |
+| `npm run lint` | Pass | TypeScript check (`tsc --noEmit`). |
+| `npm run build` | Pass | Vite production bundle built. Vite reports the main JavaScript chunk is above 500 kB. |
+| `npm run db:validate` | Pass | Prisma schema validates using the configured Prisma CLI config. |
+| Shared ROI smoke cases | Pass | Verify zero revenue gives 0% and positive revenue applies revenue less maintenance/fuel over capital. |
+| `git diff --check` | Pass | No whitespace errors in changed tracked files. |
 
-## Bugs found and fixed in this round
+No Prisma schema changes were made in this task, and no database push or destructive database
+operation was run. SMTP, Razorpay, and Render behavior require credentials/environment and were not
+validated here.
 
-| Bug | Impact | Fix |
-|---|---|---|
-| App could not start on an empty database | Hangfire created its tables first, so `EnsureCreated()` skipped the app tables. Any new deployment would crash. | Create the app tables explicitly when `Vehicles` is missing |
-| No forwarded-header handling | Behind a hosting proxy the login cookie never got `Secure`, and all users shared one login rate-limit bucket | `UseForwardedHeaders`, with `ReverseProxy:TrustAllProxies` for platforms such as Render |
-| Refresh always opened the dashboard | Refreshing any page lost your place | Remember the requested page while the session is checked |
-| No confirmation for destructive actions | Retire vehicle, cancel trip, delete expense and suspend driver ran on one click | Confirmation dialogs |
-| "Return to Available" on In Shop vehicles always failed | The button could never succeed while a work order was open | Replaced with guidance to close the work order |
-| Receipt email HTML had no charset | Some mail clients could show `â‚¹` instead of `₹` | `<meta charset="utf-8">` |
+## Recommended manual regression checks
 
-## Subscription receipt, end to end
-
-Purchase flow on the test API: plan → email code (from the mail catcher) → real Razorpay **test** order →
-payment recorded → `retry-emails`. The customer received an HTML receipt with
-`TransitOps-Receipt-TO-<date>-<id>.pdf` attached, plus the account-setup email. The Razorpay checkout
-popup itself was not driven automatically (it runs in a cross-origin frame); try it once by hand with a
-[Razorpay test card](https://razorpay.com/docs/payments/payments/test-card-details/).
-
-## Notes (not failures)
-
-- **Logout and copied tokens:** logout deletes the cookie, but a copied JWT stays valid until it expires (30 minutes). Server-side revocation would need a token denylist or security-stamp check.
-- **Refresh tokens:** not implemented; users sign in again after 30 minutes.
-- **Pagination and sorting:** list endpoints return every tenant row. Fine for demo sizes.
-- **Dashboard filters** run in the browser on loaded data; the KPI API has no filter parameters.
-
-## Manual browser checks (section 13)
-
-| Check | Result |
-|---|---|
-| Backend validation errors appear in forms | Pass (e.g. "Model must be 100 characters or fewer") |
-| Empty states | Pass: every list has an empty message |
-| Confirmation for destructive actions | Pass after fix |
-| Role-based navigation | Pass: sidebar matches the permission matrix |
-| Responsive layout | Pass: no horizontal overflow at 375 px on all 8 Fleet Manager screens |
-| Refresh keeps the current page | Pass after fix |
-| Keyboard accessibility | Partial: buttons are real buttons, but table rows that select a vehicle or driver are mouse-only |
+1. Sign in as a first-time user for each role; confirm the role-specific guide appears once and
+   dismissal remains account-specific.
+2. As Fleet Manager, add a vehicle before creating a trip; confirm the guide remains available.
+   Create a first trip, then open the dashboard and verify the onboarding flow can be dismissed.
+3. Place a vehicle with no completed/revenue-producing trip into maintenance; confirm both dashboard
+   and fleet ROI PDF show 0%.
+4. Create a vehicle with completed revenue and recorded maintenance/fuel costs; compare dashboard
+   and PDF per-vehicle ROI.
+5. Test an expired driver's list retrieval; verify status becomes Suspended and the score includes
+   the expired-licence penalty. Test reminders using a controlled SMTP inbox.
+6. Attempt a vehicle mutation as a non-Fleet Manager and a maintenance mutation as a non-Fleet
+   Manager; verify the API rejects the request.
+7. Attempt to create an overweight trip or complete with a lower odometer; verify the API returns
+   a clear validation error.
+8. Use two same-tenant browser sessions for the realtime trip workflow, then verify records from a
+   separate test tenant remain inaccessible.

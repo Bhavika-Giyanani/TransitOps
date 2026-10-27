@@ -1,16 +1,16 @@
 # 5. State Machine Diagrams
 
-These are the status transitions the API actually performs (`TripsController`, `MaintenanceController`,
-`VehiclesController`, `DriversController`, `HangfireJobs`, `SaasOnboardingService`).
+These are the status transitions performed by the Express feature routers, driver compliance job,
+and subscription onboarding routes.
 
 ## 5.1 Trip lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft : POST /trips (FM)<br/>checks capacity, driver licence/status, vehicle Available
-    Draft --> Dispatched : POST /trips/{id}/dispatch (FM)<br/>serializable tx, re-checks everything
+    [*] --> Draft : POST /api/trips (FM)<br/>checks tenant, capacity, driver licence/status, vehicle Available
+    Draft --> Dispatched : POST /api/trips/{id}/dispatch (FM)<br/>re-checks eligibility before state updates
     Draft --> Cancelled : POST /trips/{id}/cancel (FM)
-    Dispatched --> Completed : POST /trips/{id}/complete (FM or own Driver)<br/>final odometer > current, fuel ≥ 0
+    Dispatched --> Completed : POST /api/trips/{id}/complete (FM or own Driver)<br/>final odometer ≥ current, fuel ≥ 0
     Dispatched --> Cancelled : POST /trips/{id}/cancel (FM)<br/>vehicle & driver released
     Completed --> [*]
     Cancelled --> [*]
@@ -49,9 +49,9 @@ stateDiagram-v2
     OnDuty --> Available : manual status update
     Available --> OffDuty : manual status update
     OffDuty --> Available : manual status update
-    Available --> Suspended : toggle-suspension (FM / Safety)<br/>or Hangfire job - licence expired
+    Available --> Suspended : toggle-suspension (FM / Safety)<br/>or node-cron - licence expired
     OnDuty --> Suspended : toggle-suspension or licence expired
-    OffDuty --> Suspended : licence expired (Hangfire job, daily 2 AM UTC)
+    OffDuty --> Suspended : licence expired (node-cron, hourly Asia/Kolkata)
     Suspended --> Available : toggle-suspension (licence must be valid)
 
     note left of OnTrip
