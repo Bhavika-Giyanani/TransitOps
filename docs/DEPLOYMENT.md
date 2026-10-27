@@ -16,29 +16,43 @@ The repository root contains the npm scripts and `render.yaml` Blueprint.
    - `JWT_SECRET`: a unique random value of at least 32 characters.
    - `DEMO_ACCOUNT_PASSWORD`: the password for seeded demo roles.
    - `APP_BASE_URL`: the public HTTPS URL of this Render service.
-   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: production mail provider settings.
+   - `SMTP_FROM`: verified sender email address.
+   - `BREVO_API_KEY`: recommended on Render; the Brevo API sends over HTTPS and avoids outbound SMTP restrictions.
+   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`: optional SMTP fallback settings for hosts that permit SMTP.
    - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`: appropriate Razorpay credentials.
 4. Confirm the service health check at `/api/health`.
 5. In Razorpay, configure the production webhook as
    `https://<your-render-service>.onrender.com/api/onboarding/webhook/razorpay` and use the same
-   secret configured as `RAZORPAY_WEBHOOK_SECRET` in Render.
+   secret configured as `RAZORPAY_WEBHOOK_SECRET` in Render. The backend also accepts
+   `/api/onboarding/webhook` as an alias.
 
 The Blueprint builds the Prisma client and frontend bundle but does not apply database changes.
 Before deploying a schema update, review it and run `npm run db:push` against the intended database.
 The driver compliance scheduler stores its reminder deduplication key in the Prisma schema; apply
 that reviewed schema change before deploying the updated server.
 
-## SMTP and local webhook testing
+## Email delivery and local webhook testing
 
-Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` to a verified production
-mail-provider account in Render's environment settings. The local `localhost:1025` default is for
-a mail catcher, not production. Use the provider's recommended SMTP port and confirm that the
-provider/hosting plan permits outbound SMTP. Keep all credentials out of Git.
+For Render, create a Brevo API key and set `BREVO_API_KEY` and `SMTP_FROM` in the Render service
+environment. `SMTP_FROM` must be a sender address verified in Brevo. When `BREVO_API_KEY` is
+present, TransitOps sends verification, reminder, and receipt emails through Brevo's HTTPS API
+(including the PDF attachment); SMTP is not used. If the API key is absent, the application falls
+back to Nodemailer SMTP using `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM`.
+Render may restrict outbound SMTP, so the HTTPS API is preferred there. The local
+`localhost:1025` default is only for a development mail catcher. Keep all keys out of Git and
+redeploy after changing Render environment variables.
 
-For local Razorpay webhook testing only, start the app with `npm run dev`, run `ngrok http 3000`,
-and configure the temporary HTTPS forwarding address with the path
-`/api/onboarding/webhook/razorpay`. Use the same webhook secret in local `.env` and Razorpay.
-Replace the temporary URL with the Render HTTPS URL before production.
+For local Razorpay webhook testing only, start the app with `npm run dev` and run `ngrok http 3000`.
+Set Razorpay's webhook URL to the ngrok HTTPS forwarding address plus
+`/api/onboarding/webhook/razorpay` (or the supported `/api/onboarding/webhook` alias), for example
+`https://<ngrok-host>/api/onboarding/webhook/razorpay`. The bare `/api/onboarding/` prefix is not a
+webhook handler. It is the router's mount prefix; the webhook route adds `/webhook` or
+`/webhook/razorpay`. Use the same webhook secret in local `.env` and Razorpay. Replace the
+temporary URL with the Render HTTPS URL before production.
+
+The browser checkout flow calls `POST /api/onboarding/verify-payment` after Razorpay Checkout
+returns its payment details. The webhook is a separate Razorpay-to-server notification endpoint;
+it must be configured with one of the explicit webhook paths above.
 
 ## Development server ports
 

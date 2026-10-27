@@ -5,6 +5,7 @@ const port = Number(process.env.SMTP_PORT || 1025);
 const user = process.env.SMTP_USER;
 const pass = process.env.SMTP_PASS;
 const fromEmail = process.env.SMTP_FROM || 'no-reply@transitops.com';
+const brevoApiKey = process.env.BREVO_API_KEY;
 
 const transporter = nodemailer.createTransport({
   host,
@@ -29,13 +30,70 @@ function escapeHtml(value: string): string {
   })[character] || character);
 }
 
+interface OutboundEmail {
+  senderName: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+}
+
+async function sendEmail(message: OutboundEmail): Promise<void> {
+  if (brevoApiKey) {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': brevoApiKey,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: message.senderName, email: fromEmail },
+        to: [{ email: message.to }],
+        subject: message.subject,
+        textContent: message.text,
+        htmlContent: message.html,
+        ...(message.attachments?.length
+          ? {
+              attachment: message.attachments.map((attachment) => ({
+                name: attachment.filename,
+                content: attachment.content.toString('base64'),
+              })),
+            }
+          : {}),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Brevo email API returned ${response.status}: ${details}`);
+    }
+    return;
+  }
+
+  await transporter.sendMail({
+    from: `"${message.senderName}" <${fromEmail}>`,
+    to: message.to,
+    subject: message.subject,
+    text: message.text,
+    html: message.html,
+    attachments: message.attachments?.map((attachment) => ({
+      filename: attachment.filename,
+      content: attachment.content,
+      contentType: attachment.contentType,
+    })),
+  });
+}
+
 export const emailService = {
   sendLicenseReminder: async (toEmail: string, driverName: string, expiryDate: string) => {
     const safeDriverName = escapeHtml(driverName);
     const safeExpiryDate = escapeHtml(expiryDate);
     try {
-      await transporter.sendMail({
-        from: `"TransitOps Safety Desk" <${fromEmail}>`,
+      await sendEmail({
+        senderName: 'TransitOps Safety Desk',
         to: toEmail,
         subject: `URGENT: Commercial Driving Licence Renewal Required (${driverName})`,
         text: `Dear ${driverName},\n\nYour commercial driver licence is scheduled to expire on ${expiryDate}. Under Indian Motor Vehicles Act guidelines, you must renew your licence before operating any transport vehicle.\n\nPlease visit your local RTO or the Sarathi Parivahan portal to complete your renewal.\n\nBest regards,\nTransitOps Operations Team`,
@@ -56,7 +114,7 @@ export const emailService = {
           </div>
         `,
       });
-      console.log(`[TransitOps SMTP] Licence reminder email dispatched to ${toEmail}`);
+      console.log(`[TransitOps Email] Licence reminder dispatched to ${toEmail} via ${brevoApiKey ? 'Brevo API' : 'SMTP'}`);
       return { success: true };
     } catch (err) {
       console.error('[TransitOps SMTP] Licence reminder could not be delivered:', err);
@@ -67,8 +125,8 @@ export const emailService = {
   sendVerificationCode: async (toEmail: string, orgName: string, code: string) => {
       const safeOrganizationName = escapeHtml(orgName);
       const safeCode = escapeHtml(code);
-      await transporter.sendMail({
-        from: `"TransitOps Onboarding" <${fromEmail}>`,
+      await sendEmail({
+        senderName: 'TransitOps Onboarding',
         to: toEmail,
         subject: `Your TransitOps Verification Code: ${code}`,
         text: `Welcome to TransitOps for ${orgName}!\n\nYour verification code is: ${code}\n\nUse this code to verify your fleet administration account.`,
@@ -92,7 +150,7 @@ export const emailService = {
           </div>
         `,
       });
-      console.log(`[TransitOps SMTP] Verification code sent to ${toEmail}`);
+      console.log(`[TransitOps Email] Verification code sent to ${toEmail} via ${brevoApiKey ? 'Brevo API' : 'SMTP'}`);
       return { success: true };
   },
 
@@ -126,8 +184,8 @@ export const emailService = {
       },
     ];
 
-      await transporter.sendMail({
-        from: `"TransitOps Accounts" <${fromEmail}>`,
+      await sendEmail({
+        senderName: 'TransitOps Accounts',
         to: data.toEmail,
         subject: `Payment Confirmed & Account Setup: Welcome ${data.organizationName} to TransitOps!`,
         text: `Dear ${data.fullName},\n\nThank you for subscribing to TransitOps (${data.planName}).\n\nPayment Details:\n- Organization: ${data.organizationName}\n- Amount Paid: INR ${amountInr}\n- Order ID: ${data.orderId}\n- Payment ID: ${data.paymentId}\n\nSet up your organization admin credentials using this secure link:\n${data.setupUrl}\n\nBest regards,\nTransitOps Operations Team`,
@@ -191,9 +249,13 @@ export const emailService = {
             <p style="color: #94a3b8; font-size: 12px; margin: 0;">TransitOps Smart Transport Operations Platform • GSTIN Compliant Invoicing</p>
           </div>
         `,
-        attachments,
+        attachments: attachments.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content,
+          contentType: attachment.contentType,
+        })),
       });
-    console.log(`[TransitOps SMTP] Professional payment receipt & setup email sent to ${data.toEmail}`);
+    console.log(`[TransitOps Email] Professional payment receipt & setup email sent to ${data.toEmail} via ${brevoApiKey ? 'Brevo API' : 'SMTP'}`);
     return { success: true };
   },
 };
