@@ -10,7 +10,6 @@ interface SplashScreenProps {
 export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
   const { theme } = useTheme();
   const [progress, setProgress] = useState(0);
-  const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
     { text: 'Booting TransitOps Core Engine...', icon: Activity },
@@ -21,22 +20,20 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(onFinish, 400);
-          return 100;
-        }
-        const next = prev + 3;
-        if (next > 75) setStepIndex(3);
-        else if (next > 45) setStepIndex(2);
-        else if (next > 20) setStepIndex(1);
-        return next;
-      });
+      setProgress((previous) => Math.min(previous + 3, 100));
     }, 45);
 
     return () => clearInterval(interval);
-  }, [onFinish]);
+  }, []);
+
+  useEffect(() => {
+    if (progress < 100) return;
+
+    const timeout = setTimeout(onFinish, 400);
+    return () => clearTimeout(timeout);
+  }, [onFinish, progress]);
+
+  const stepIndex = progress > 75 ? 3 : progress > 45 ? 2 : progress > 20 ? 1 : 0;
 
   const CurrentIcon = steps[stepIndex].icon;
 

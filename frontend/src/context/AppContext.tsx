@@ -156,7 +156,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Splash Screen State
-  const [isSplashActive, setIsSplashActive] = useState<boolean>(false);
+  const [isSplashActive, setIsSplashActive] = useState<boolean>(true);
 
   // Auth & View State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
@@ -872,8 +872,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addNotification('success', 'CSV Export Complete', `Exported ${rows.length} rows to ${filename}.csv.`);
   };
 
-  const showSplashAgain = () => setIsSplashActive(true);
-  const dismissSplash = () => setIsSplashActive(false);
+  const showSplashAgain = useCallback(() => setIsSplashActive(true), []);
+  const dismissSplash = useCallback(() => setIsSplashActive(false), []);
 
   return (
     <AppContext.Provider
